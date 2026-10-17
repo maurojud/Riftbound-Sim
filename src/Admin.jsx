@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabase'
-import { KINDS, COLORS } from './game'
+import { KINDS, COLORS, parseCardFilename } from './game'
 
 export default function Admin({ user }) {
   const [cards, setCards] = useState([])
   const [kind, setKind] = useState('Unit')
   const [color, setColor] = useState('')
+  const [queue, setQueue] = useState([])
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
   const [q, setQ] = useState('')
@@ -26,23 +27,34 @@ export default function Admin({ user }) {
     )
   }
 
-  async function upload(files) {
+  const exists = (r) =>
+    cards.some((c) => c.name.toLowerCase() === r.name.toLowerCase() && c.kind === r.kind && (c.color || '') === (r.color || ''))
+  const rows = queue.map((r) => ({ ...r, dup: exists(r) }))
+  const todo = rows.filter((r) => !r.dup)
+
+  function choose(files) {
+    setMsg('')
+    setQueue([...files].map((file) => ({ file, ...parseCardFilename(file.name, { kind, color }) })))
+  }
+
+  async function upload() {
     setBusy(true)
     setMsg('')
     let ok = 0
-    for (const f of files) {
-      const ext = f.name.split('.').pop().toLowerCase()
+    for (const r of todo) {
+      const ext = r.file.name.split('.').pop().toLowerCase()
       const path = `${crypto.randomUUID()}.${ext}`
-      const up = await supabase.storage.from('cards').upload(path, f, { contentType: f.type })
+      const up = await supabase.storage.from('cards').upload(path, r.file, { contentType: r.file.type })
       if (up.error) { setMsg(up.error.message); continue }
       const { data } = supabase.storage.from('cards').getPublicUrl(path)
       const ins = await supabase.from('cards').insert({
-        name: f.name.replace(/\.[^.]+$/, ''), kind, color: color || null, image_url: data.publicUrl, image_path: path,
+        name: r.name, kind: r.kind, color: r.color || null, image_url: data.publicUrl, image_path: path,
       })
       if (ins.error) setMsg(ins.error.message); else ok++
     }
     setBusy(false)
-    setMsg(`${ok} von ${files.length} Karten hochgeladen.`)
+    setQueue([])
+    setMsg(`${ok} von ${todo.length} Karten hochgeladen.`)
     load()
   }
 
@@ -60,21 +72,55 @@ export default function Admin({ user }) {
     <div className="stack">
       <section className="panel">
         <h2>Karten hochladen</h2>
-        <p className="muted">Mehrere Bilder auf einmal wählen. Der Dateiname wird zum Kartennamen und lässt sich danach ändern.</p>
+        <p className="muted">
+          Name, Art und Farbe werden aus dem Dateinamen gelesen. Aufbau: <code>name_art_farbe_rest.webp</code>, zum Beispiel{' '}
+          <code>riven_unit_calm_3m-4p.webp</code> oder <code>jinx-loose-cannon_champion_chaos.png</code>. Art und Farbe können in
+          beliebiger Reihenfolge stehen, alles danach wird ignoriert. Fehlt etwas, gelten die Standardwerte hier:
+        </p>
         <div className="row">
-          <label>Art für diesen Upload
+          <label>Standard-Art
             <select value={kind} onChange={(e) => setKind(e.target.value)}>
               {KINDS.map((k) => <option key={k}>{k}</option>)}
             </select>
           </label>
-          <label>Farbe (bei Runen wichtig)
+          <label>Standard-Farbe
             <select value={color} onChange={(e) => setColor(e.target.value)}>
               <option value="">keine</option>
               {COLORS.map((k) => <option key={k}>{k}</option>)}
             </select>
           </label>
-          <input type="file" accept="image/*" multiple disabled={busy} onChange={(e) => upload([...e.target.files])} />
+          <input type="file" accept="image/*" multiple disabled={busy}
+            onChange={(e) => { choose(e.target.files); e.target.value = '' }} />
         </div>
+
+        {rows.length > 0 && (
+          <>
+            <table className="preview">
+              <thead><tr><th>Datei</th><th>Name</th><th>Art</th><th>Farbe</th><th>Status</th></tr></thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={i} className={r.dup ? 'skip' : ''}>
+                    <td className="muted">{r.file.name}</td>
+                    <td>{r.name}</td>
+                    <td className={r.fromName.kind ? '' : 'muted'}>{r.kind}</td>
+                    <td className={r.fromName.color ? '' : 'muted'}>{r.color || '–'}</td>
+                    <td>
+                      {r.dup ? 'schon vorhanden, wird übersprungen'
+                        : r.kind === 'Rune' && !r.color ? <span className="warn">Rune ohne Farbe</span>
+                        : 'bereit'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="row">
+              <button className="primary" disabled={busy || !todo.length} onClick={upload}>
+                {busy ? 'Lädt hoch…' : `${todo.length} Karten hochladen`}
+              </button>
+              <button disabled={busy} onClick={() => setQueue([])}>Abbrechen</button>
+            </div>
+          </>
+        )}
         {msg && <p className="muted">{msg}</p>}
       </section>
 
