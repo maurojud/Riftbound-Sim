@@ -29,6 +29,31 @@ export const DEFAULT_SETTINGS = {
   battlefieldRandom: false, // Battlefield zufällig zuweisen statt selbst wählen
 }
 
+// Liest Name, Art und Farbe aus dem Dateinamen, z. B. riven_unit_calm_3m-4p.webp
+// Format: Name_Art_Farbe_Rest. Art und Farbe dürfen in beliebiger Reihenfolge stehen, der Rest wird ignoriert.
+// Im Namen steht - oder ein Leerzeichen für ein Leerzeichen (jinx-loose-cannon wird zu Jinx Loose Cannon).
+const KIND_ALIASES = { bf: 'Battlefield' }
+export function parseCardFilename(filename, defaults = {}) {
+  const base = filename.replace(/\.[^.]+$/, '')
+  const [rawName, ...rest] = base.split('_')
+  const name = rawName.split(/[-\s]+/).filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+  let kind = null
+  let color = null
+  for (const t of rest) {
+    const k = t.toLowerCase()
+    const kd = KINDS.find((x) => x.toLowerCase() === k) || KIND_ALIASES[k]
+    const cl = COLORS.find((x) => x.toLowerCase() === k)
+    if (kd && !kind) kind = kd
+    else if (cl && !color) color = cl
+  }
+  return {
+    name: name || base,
+    kind: kind || defaults.kind || 'Unit',
+    color: color || defaults.color || null,
+    fromName: { kind: !!kind, color: !!color },
+  }
+}
+
 export const kindOf = (c) => (c?.kind || '').toLowerCase()
 
 const uid = () => Math.random().toString(36).slice(2, 10)
