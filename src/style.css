@@ -167,3 +167,10 @@ h1 { font-size: 2.2rem; font-weight: 800; }
 .ab-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
 .ab-row button { white-space: nowrap; }
 @media (prefers-reduced-motion: reduce) { .fan-card { transition: none; } }
+
+.preview { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: .92rem; }
+.preview th, .preview td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #346b7e; }
+.preview th { color: var(--muted); font-weight: 600; }
+.preview tr.skip { opacity: .55; }
+.preview code, .panel code { background: #0f2630; padding: 1px 6px; border-radius: 6px; }
+@media (max-width: 760px) { .preview { display: block; overflow-x: auto; } }
