@@ -27,6 +27,7 @@ export const DEFAULT_SETTINGS = {
   trashInspect: true,       // andere dürfen den ganzen Trash ansehen
   handCount: true,          // Anzahl der Handkarten der anderen sichtbar
   battlefieldRandom: false, // Battlefield zufällig zuweisen statt selbst wählen
+  enforceTurns: true,       // nur wer den Fokus hat, darf spielen (sobald ein Zug gestartet wurde)
 }
 
 // Liest Name, Art und Farbe aus dem Dateinamen, z. B. riven_unit_calm_3m-4p.webp
