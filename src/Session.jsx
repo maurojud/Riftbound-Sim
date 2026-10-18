@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { supabase } from './supabase'
 import { go } from './nav'
-import { Table, PlayerArea, CardView } from './Table'
+import { Table, MyBoard, CardView, GameCtx } from './Table'
 import {
   ZONES, TARGET_LABEL, DEFAULT_SETTINGS, buildPlayer, moveCard, toggleFlag, draw, drawRune, shuffleZone, untapAll, addPoints,
-  pickBattlefield, pickChampion, targetsFor, canTap, canFlip, analyzeDeck, findInst, isValidState,
+  pickBattlefield, pickChampion, targetsFor, canTap, canFlip, analyzeDeck, isValidState,
 } from './game'
 
 export const SETTING_LABELS = {
+  enforceTurns: 'Zugreihenfolge erzwingen (nur wer den Fokus hat, darf spielen)',
   trashTop: 'Oberste Trash-Karte der anderen sichtbar',
   trashInspect: 'Andere dürfen den ganzen Trash ansehen',
   handCount: 'Anzahl der Handkarten der anderen sichtbar',
@@ -15,6 +16,7 @@ export const SETTING_LABELS = {
 }
 
 const newest = (a, b) => (!a ? b : !b ? a : (a.ts || 0) >= (b.ts || 0) ? a : b)
+const zoneAt = (x, y) => document.elementFromPoint(x, y)?.closest('[data-drop]')?.dataset.drop || null
 
 function Modal({ title, onClose, children }) {
   return (
@@ -22,6 +24,29 @@ function Modal({ title, onClose, children }) {
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head"><h3>{title}</h3><button onClick={onClose}>Schließen</button></div>
         {children}
+      </div>
+    </div>
+  )
+}
+
+function ContextMenu({ menu, onClose }) {
+  const ref = useRef(null)
+  const [pos, setPos] = useState({ left: menu.x, top: menu.y })
+  useLayoutEffect(() => {
+    const r = ref.current.getBoundingClientRect()
+    setPos({
+      left: Math.max(6, Math.min(menu.x, window.innerWidth - r.width - 6)),
+      top: Math.max(6, Math.min(menu.y, window.innerHeight - r.height - 6)),
+    })
+  }, [menu])
+  return (
+    <div className="ctx-bg" onPointerDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }}>
+      <div className="ctxmenu" ref={ref} style={pos} onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
+        {menu.title && <div className="t strong">{menu.title}</div>}
+        {menu.items.map((it, i) =>
+          it.sep ? <div key={i} className="t">{it.sep}</div> : (
+            <button key={i} disabled={it.disabled} onClick={() => { onClose(); it.run() }}>{it.label}</button>
+          ))}
       </div>
     </div>
   )
@@ -75,7 +100,7 @@ function Setup({ mine, cards, onBattlefield, onChampion }) {
   )
 }
 
-function HandFan({ hand, cards, selId, cw, onSelect }) {
+function HandFan({ hand, cards, cw, bind, drag }) {
   const [w, setW] = useState(window.innerWidth)
   useEffect(() => {
     const f = () => setW(window.innerWidth)
@@ -83,22 +108,22 @@ function HandFan({ hand, cards, selId, cw, onSelect }) {
     return () => removeEventListener('resize', f)
   }, [])
   const n = hand.length
-  const avail = w - 24
-  const step = n <= 1 ? 0 : Math.min(cw * 0.8, (avail - cw) / (n - 1))
+  const step = n <= 1 ? 0 : Math.min(cw * 0.8, (w - 24 - cw) / (n - 1))
   const total = n ? cw + step * (n - 1) : 0
   const mid = (n - 1) / 2
+  const over = drag?.over === 'hand' && drag.allowed.includes('hand')
   return (
-    <div className="fan" style={{ '--cw': cw + 'px', height: cw * 1.4 + 74 }}>
+    <div className={'fan' + (drag ? ' dragging' : '')} style={{ '--cw': cw + 'px', height: cw * 1.4 + 74 }}>
+      <div className={'fan-drop' + (drag && drag.allowed.includes('hand') ? ' dropok' : '') + (over ? ' dropover' : '')} data-drop="hand" />
       {n === 0 && <span className="muted fan-empty">Keine Handkarten. Tippe auf dein Deck, um zu ziehen.</span>}
       <div className="fan-inner" style={{ width: total }}>
         {hand.map((inst, i) => {
           const off = i - mid
-          const sel = inst.id === selId
-          const rot = sel ? 0 : off * (n > 6 ? 2.2 : 3.5)
-          const dy = sel ? -58 : off * off * (n > 6 ? 0.9 : 2.5)
+          const rot = off * (n > 6 ? 2.2 : 3.5)
+          const dy = off * off * (n > 6 ? 0.9 : 2.5)
           return (
-            <div key={inst.id} className="fan-card" style={{ left: step * i, transform: `translateY(${dy}px) rotate(${rot}deg) scale(${sel ? 1.15 : 1})`, zIndex: sel ? 100 : i }}>
-              <CardView card={cards[inst.cardId]} inst={inst} selected={sel} onClick={() => onSelect(inst)} />
+            <div key={inst.id} className="fan-card" style={{ left: step * i, transform: `translateY(${dy}px) rotate(${rot}deg)`, zIndex: i }}>
+              <CardView card={cards[inst.cardId]} inst={inst} handlers={bind(inst)} dim={drag?.id === inst.id} />
             </div>
           )
         })}
@@ -111,13 +136,18 @@ export default function Session({ id, view, user }) {
   const [row, setRow] = useState(null)
   const [members, setMembers] = useState([])
   const [cards, setCards] = useState({})
-  const [live, setLive] = useState({})          // per Broadcast empfangene Spielerzustände (sofort)
-  const [mine, setMine] = useState(undefined)   // undefined = lädt, null = noch kein Deck
+  const [live, setLive] = useState({})            // per Broadcast empfangene Spielerzustände
+  const [liveTable, setLiveTable] = useState(null) // per Broadcast empfangener Zugstatus
+  const [mine, setMine] = useState(undefined)     // undefined = lädt, null = noch kein Deck
   const mineRef = useRef(undefined)
   const chRef = useRef(null)
   const [tab, setTab] = useState('play')
-  const [sel, setSel] = useState(null)
   const [modal, setModal] = useState(null)
+  const [preview, setPreview] = useState(null)
+  const [menu, setMenu] = useState(null)
+  const [drag, setDrag] = useState(null)
+  const dragRef = useRef(null)
+  const ghostRef = useRef(null)
   const [err, setErr] = useState('')
   const [vw, setVw] = useState(window.innerWidth)
 
@@ -149,11 +179,10 @@ export default function Session({ id, view, user }) {
     supabase.from('cards').select('*').then(({ data }) => setCards(Object.fromEntries((data || []).map((c) => [c.id, c]))))
     const ch = supabase
       .channel(`table-${id}`, { config: { broadcast: { self: false } } })
-      // Schneller Weg: Spieler senden Änderungen direkt an alle Geräte
       .on('broadcast', { event: 'seat' }, ({ payload }) => setLive((l) => ({ ...l, [payload.seat]: payload.state })))
+      .on('broadcast', { event: 'table' }, ({ payload }) => setLiveTable(payload))
       .on('broadcast', { event: 'settings' }, ({ payload }) => setRow((r) => r && { ...r, settings: payload }))
       .on('broadcast', { event: 'ping' }, () => { loadRow(); loadMembers() })
-      // Sicherer Weg: Datenbankänderungen
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions', filter: `id=eq.${id}` }, (p) => p.new && setRow((r) => ({ ...(r || {}), ...p.new })))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'session_members', filter: `session_id=eq.${id}` }, loadMembers)
       .subscribe((status) => {
@@ -183,6 +212,14 @@ export default function Session({ id, view, user }) {
   }
   const act = (fn) => mineRef.current && commit(fn(mineRef.current))
 
+  async function commitTable(next) {
+    const payload = { ...next, ts: Date.now() }
+    setLiveTable(payload)
+    chRef.current?.send({ type: 'broadcast', event: 'table', payload })
+    const { error } = await supabase.rpc('set_table', { p_session: id, p_table: payload })
+    if (error) setErr(error.message.includes('set_table') ? 'Zugfunktion fehlt in der Datenbank. Bitte supabase/migration-3.sql ausführen.' : error.message)
+  }
+
   const players = members
     .filter((m) => m.seat)
     .sort((a, b) => a.seat - b.seat)
@@ -190,19 +227,117 @@ export default function Session({ id, view, user }) {
       const s = m.seat === mySeat ? mine : newest(live[m.seat], row?.state?.players?.[m.seat])
       return { seat: m.seat, name: m.profiles?.username || 'Spieler', state: isValidState(s) ? s : null }
     })
+  const nameOf = (seat) => players.find((p) => p.seat === seat)?.name || '?'
   const stateOf = (seat) => players.find((p) => p.seat === seat)?.state
 
-  const selInfo = sel && mine ? findInst(mine, sel.id) : null
-  const selCard = selInfo ? cards[selInfo.inst.cardId] : null
-
-  function onCard(seat, zone, inst) {
-    if (seat === mySeat) setSel((s) => (s?.id === inst.id ? null : { id: inst.id }))
-    else if (!inst.faceDown) setModal({ type: 'preview', card: cards[inst.cardId] })
+  // ───────── Zug und Fokus ─────────
+  const tableRaw = newest(liveTable, row?.state?.table)
+  const turn = tableRaw?.seat ? tableRaw : null
+  const enforce = settings.enforceTurns
+  const canAct = mySeat != null && (!enforce || !turn || turn.focus === mySeat)
+  const seats = players.map((p) => p.seat)
+  const nextSeat = (s) => seats[(seats.indexOf(s) + 1) % seats.length]
+  const canPassTurn = !turn || !enforce || (turn.seat === mySeat && turn.focus === mySeat)
+  const canPassFocus = !!turn && (!enforce || turn.focus === mySeat)
+  const passTurn = () => {
+    if (!turn) return commitTable({ seat: mySeat, focus: mySeat, n: 1 })
+    const s = nextSeat(turn.seat)
+    commitTable({ seat: s, focus: s, n: (turn.n || 1) + 1 })
   }
+  const passFocus = () => commitTable({ ...turn, focus: nextSeat(turn.focus) })
+  const turnText = !turn
+    ? 'Das Spiel hat noch nicht begonnen.'
+    : `Zug ${turn.n || 1}: ${nameOf(turn.seat)} ist am Zug` + (turn.focus !== turn.seat ? `, Fokus bei ${nameOf(turn.focus)}` : '')
+
+  // ───────── Karten-Interaktion: Klick, Rechtsklick/Langdruck, Drag and Drop ─────────
+  function startDrag(inst, zone, card, w, x, y) {
+    const allowed = targetsFor(card, zone)
+    dragRef.current = { id: inst.id, allowed, over: null, w }
+    setDrag({ id: inst.id, card, allowed, over: null, w, x, y })
+  }
+  function moveDrag(x, y) {
+    const d = dragRef.current
+    if (!d) return
+    if (ghostRef.current) ghostRef.current.style.transform = `translate(${x - d.w / 2}px, ${y - d.w * 0.7}px)`
+    const over = zoneAt(x, y)
+    if (over !== d.over) { d.over = over; setDrag((s) => s && { ...s, over }) }
+  }
+  function endDrag(x, y) {
+    const d = dragRef.current
+    dragRef.current = null
+    setDrag(null)
+    const over = zoneAt(x, y)
+    if (d && over && d.allowed.includes(over)) act((p) => moveCard(p, d.id, over))
+  }
+  useEffect(() => {
+    if (drag && ghostRef.current) ghostRef.current.style.transform = `translate(${drag.x - drag.w / 2}px, ${drag.y - drag.w * 0.7}px)`
+  }, [drag?.id]) // eslint-disable-line
+
+  function bindCard(seat, zone, inst, opts = {}) {
+    const card = cards[inst.cardId]
+    const own = seat === mySeat
+    const show = () => card && setPreview(card)
+    if (!own) return { onClick: () => { if (!inst.faceDown) show() } }
+    if (!canAct) return { onClick: show }
+
+    const click = () => (zone === 'runes' ? act((p) => toggleFlag(p, inst.id, 'tapped')) : show())
+    const openMenu = (x, y) => {
+      const items = []
+      if (canTap(card, zone)) items.push({ label: inst.tapped ? 'Enttappen' : 'Tappen', run: () => act((p) => toggleFlag(p, inst.id, 'tapped')) })
+      if (canFlip(card, zone)) items.push({ label: inst.faceDown ? 'Aufdecken' : 'Verdecken', run: () => act((p) => toggleFlag(p, inst.id, 'faceDown')) })
+      items.push({ label: 'Ansehen', run: show })
+      const targets = targetsFor(card, zone)
+      if (targets.length) {
+        items.push({ sep: 'Verschieben nach' })
+        targets.forEach((t) => items.push({ label: TARGET_LABEL[t], run: () => act((p) => moveCard(p, inst.id, t)) }))
+      }
+      setMenu({ x, y, title: card?.name, items })
+    }
+    const onContextMenu = (e) => { e.preventDefault(); openMenu(e.clientX, e.clientY) }
+    const onPointerDown = (e) => {
+      if (e.button > 0) return
+      const sx = e.clientX
+      const sy = e.clientY
+      const w = e.currentTarget.getBoundingClientRect().width
+      let dragging = false
+      let long = false
+      let moved = false
+      const timer = setTimeout(() => { long = true; cleanup(); openMenu(sx, sy) }, 520)
+      const move = (ev) => {
+        if (long) return
+        if (!dragging) {
+          if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 8) return
+          moved = true
+          clearTimeout(timer)
+          if (opts.noDrag) return
+          dragging = true
+          startDrag(inst, zone, card, w, ev.clientX, ev.clientY)
+        }
+        moveDrag(ev.clientX, ev.clientY)
+      }
+      const up = (ev) => {
+        cleanup(); clearTimeout(timer)
+        if (long) return
+        if (dragging) endDrag(ev.clientX, ev.clientY)
+        else if (!moved) click()
+      }
+      const cancel = () => { cleanup(); clearTimeout(timer); if (dragging) { dragRef.current = null; setDrag(null) } }
+      function cleanup() {
+        removeEventListener('pointermove', move)
+        removeEventListener('pointerup', up)
+        removeEventListener('pointercancel', cancel)
+      }
+      addEventListener('pointermove', move)
+      addEventListener('pointerup', up)
+      addEventListener('pointercancel', cancel)
+    }
+    return { onPointerDown, onContextMenu }
+  }
+
   function onZone(seat, zone) {
     if (seat === mySeat) {
-      if (zone === 'deck') return act((p) => draw(p, 1))
-      if (zone === 'runeDeck') return act((p) => drawRune(p, 1))
+      if (zone === 'deck' && canAct) return act((p) => draw(p, 1))
+      if (zone === 'runeDeck' && canAct) return act((p) => drawRune(p, 1))
       if (zone === 'trash' || zone === 'banish') setModal({ type: 'zone', zone, seat })
       return
     }
@@ -214,35 +349,28 @@ export default function Session({ id, view, user }) {
 
   const pw = sessionStorage.getItem('pw:' + id)
   const joinUrl = `${location.origin}${location.pathname}#/join/${row.code}`
+  const ctx = { cards, settings, mySeat, turn, canAct, bindCard, onZone, drag }
 
   const zoneModal = () => {
     const own = modal.seat === mySeat
     const list = stateOf(modal.seat)?.zones[modal.zone] || []
-    const owner = players.find((p) => p.seat === modal.seat)?.name
     return (
-      <Modal title={`${ZONES[modal.zone]}${own ? '' : ' von ' + owner} · ${list.length}`} onClose={() => setModal(null)}>
+      <Modal title={`${ZONES[modal.zone]}${own ? '' : ' von ' + nameOf(modal.seat)} · ${list.length}`} onClose={() => setModal(null)}>
         <div className="zone-grid">
           {[...list].reverse().map((inst) => (
-            <CardView key={inst.id} card={cards[inst.cardId]} inst={inst} reveal={own} small
-              onClick={() => {
-                if (own) { setSel({ id: inst.id }); setModal(null) }
-                else if (!inst.faceDown) setModal({ type: 'preview', card: cards[inst.cardId] })
-              }} />
+            <CardView key={inst.id} card={cards[inst.cardId]} inst={inst} reveal={own} small handlers={bindCard(modal.seat, modal.zone, inst, { noDrag: true })} />
           ))}
         </div>
-        {list.length > 0 && <p className="muted small">Neueste Karte zuerst.</p>}
+        {list.length > 0 && <p className="muted small">Neueste Karte zuerst. Linksklick vergrößert{own ? ', Rechtsklick (oder lange drücken) öffnet Optionen' : ''}.</p>}
       </Modal>
     )
   }
 
-  const modals = (
+  const overlays = (
     <>
       {modal?.type === 'zone' && zoneModal()}
-      {modal?.type === 'preview' && modal.card && (
-        <Modal title={modal.card.name} onClose={() => setModal(null)}><img className="big" src={modal.card.image_url} alt={modal.card.name} /></Modal>
-      )}
       {modal?.type === 'settings' && (
-        <Modal title="Sichtbarkeit und Optionen" onClose={() => setModal(null)}>
+        <Modal title="Optionen" onClose={() => setModal(null)}>
           <div className="stack">
             {Object.entries(SETTING_LABELS).map(([k, label]) => (
               <label key={k} className="check">
@@ -258,29 +386,43 @@ export default function Session({ id, view, user }) {
           </div>
         </Modal>
       )}
+      {preview && (
+        <div className="modal-bg preview-bg" onClick={() => setPreview(null)}>
+          <img className="big" src={preview.image_url} alt={preview.name} />
+        </div>
+      )}
+      {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {drag && (
+        <div className="ghost" ref={ghostRef} style={{ width: drag.w }}>
+          <img src={drag.card.image_url} alt="" draggable={false} />
+        </div>
+      )}
     </>
   )
 
   // ───────── Fernseher und Zuschauer: nur der Tisch ─────────
   if (view === 'tv' || view === 'watch') {
     return (
-      <div className="tv">
-        <div className="tvbar">
-          {view === 'tv' ? (
-            <>
-              <div><span className="muted">Code</span> <strong className="bigcode">{row.code}</strong></div>
-              {pw && <div><span className="muted">Passwort</span> <strong>{pw}</strong></div>}
-              <div className="muted joinurl">{joinUrl}</div>
-            </>
-          ) : <strong>Zuschauer · Code {row.code}</strong>}
-          <span className="spacer" />
-          {isHost && <button onClick={() => setModal({ type: 'settings' })}>Sichtbarkeit</button>}
-          <button onClick={() => go('/')}>Verlassen</button>
+      <GameCtx.Provider value={ctx}>
+        <div className="tv">
+          <div className={'tvbar' + (players.length < 2 ? ' wait' : '')}>
+            {view === 'tv' ? (
+              <>
+                <div><span className="muted">Code</span> <strong className="bigcode">{row.code}</strong></div>
+                {pw && <div><span className="muted">Passwort</span> <strong>{pw}</strong></div>}
+                {players.length < 2 && <div className="muted joinurl">{joinUrl}</div>}
+              </>
+            ) : <strong>Zuschauer · Code {row.code}</strong>}
+            <div className="turnchip">{turnText}</div>
+            <span className="spacer" />
+            {isHost && <button onClick={() => setModal({ type: 'settings' })}>Optionen</button>}
+            <button onClick={() => go('/')}>Verlassen</button>
+          </div>
+          {err && <p className="error pad">{err}</p>}
+          <Table players={players} mySeat={null} />
+          {overlays}
         </div>
-        {err && <p className="error pad">{err}</p>}
-        <Table players={players} cards={cards} settings={settings} mySeat={null} onCard={onCard} onZone={onZone} />
-        {modals}
-      </div>
+      </GameCtx.Provider>
     )
   }
 
@@ -296,81 +438,74 @@ export default function Session({ id, view, user }) {
   }
 
   const fanCw = vw < 700 ? 84 : 112
-  const fanH = fanCw * 1.4 + 74
   const playing = mine && !mine.setup?.battlefield && !mine.setup?.champion
-
-  const bar = playing && selInfo && (
-    <div className="actionbar" style={{ bottom: tab === 'play' ? fanH : 0 }}>
-      <div className="ab-head">
-        <strong>{selCard?.name || 'Karte'}</strong>
-        <span className="muted small">{ZONES[selInfo.zone]}</span>
-        <span className="spacer" />
-        <button onClick={() => selCard && setModal({ type: 'preview', card: selCard })}>Ansehen</button>
-        <button onClick={() => setSel(null)}>Fertig</button>
-      </div>
-      <div className="ab-row">
-        {canTap(selCard, selInfo.zone) && (
-          <button className="primary" onClick={() => act((p) => toggleFlag(p, sel.id, 'tapped'))}>{selInfo.inst.tapped ? 'Enttappen' : 'Tappen'}</button>
-        )}
-        {canFlip(selCard, selInfo.zone) && (
-          <button onClick={() => act((p) => toggleFlag(p, sel.id, 'faceDown'))}>{selInfo.inst.faceDown ? 'Aufdecken' : 'Verdecken'}</button>
-        )}
-        {targetsFor(selCard, selInfo.zone).map((t) => (
-          <button key={t} onClick={() => { act((p) => moveCard(p, sel.id, t)); setSel(null) }}>{TARGET_LABEL[t]}</button>
-        ))}
-      </div>
-    </div>
-  )
+  const openMore = (e) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    const items = [
+      { label: '4 Karten ziehen', disabled: !canAct, run: () => act((p) => draw(p, 4)) },
+      { label: 'Rune ziehen', disabled: !canAct, run: () => act((p) => drawRune(p, 1)) },
+      { label: 'Deck mischen', disabled: !canAct, run: () => act((p) => shuffleZone(p, 'deck')) },
+      { label: 'Runendeck mischen', disabled: !canAct, run: () => act((p) => shuffleZone(p, 'runeDeck')) },
+      { label: 'Neues Deck wählen', run: () => { if (confirm('Neues Deck wählen? Dein Spielstand wird zurückgesetzt.')) commit(null) } },
+      ...(isHost ? [{ label: 'Optionen', run: () => setModal({ type: 'settings' }) }] : []),
+      { label: 'Session verlassen', run: () => go('/') },
+    ]
+    setMenu({ x: r.right - 190, y: r.bottom + 4, items })
+  }
 
   return (
-    <div className="player">
-      <div className="tabs">
-        <button className={tab === 'play' ? 'on' : ''} onClick={() => setTab('play')}>Mein Spiel</button>
-        <button className={tab === 'table' ? 'on' : ''} onClick={() => setTab('table')}>Ganzer Tisch</button>
-        <span className="spacer" />
-        <span className="muted small">Code {row.code}</span>
-        {isHost && <button onClick={() => setModal({ type: 'settings' })}>Optionen</button>}
-        <button onClick={() => go('/')}>Verlassen</button>
+    <GameCtx.Provider value={ctx}>
+      <div className="player">
+        <div className="tabs">
+          <button className={tab === 'play' ? 'on' : ''} onClick={() => setTab('play')}>Mein Spiel</button>
+          <button className={tab === 'table' ? 'on' : ''} onClick={() => setTab('table')}>Ganzer Tisch</button>
+          <span className="spacer" />
+          <span className="muted small">Code {row.code}</span>
+        </div>
+        {err && <p className="error pad">{err}</p>}
+
+        {mine === undefined ? <div className="center">Lade…</div> :
+         mine === null ? (
+          <div className="panel narrow"><DeckPicker cards={cards} onPick={(d) => commit(buildPlayer(d, cards, settings))} /></div>
+         ) : !playing ? (
+          <Setup mine={mine} cards={cards}
+            onBattlefield={(iid) => act((p) => pickBattlefield(p, iid))}
+            onChampion={(iid) => act((p) => pickChampion(p, iid))} />
+         ) : (
+          <>
+            <div className="toolbar">
+              <button className="primary" disabled={!canPassTurn} onClick={passTurn}>{turn ? 'Zug beenden' : 'Zug starten'}</button>
+              <button disabled={!canPassFocus} onClick={passFocus}>Fokus abgeben</button>
+              <span className="points">
+                <button onClick={() => act((p) => addPoints(p, -1))} disabled={!canAct}>−</button>
+                <strong>{mine.points} Punkte</strong>
+                <button onClick={() => act((p) => addPoints(p, 1))} disabled={!canAct}>+</button>
+              </span>
+              <button disabled={!canAct} onClick={() => act((p) => draw(p, 1))}>Karte ziehen</button>
+              <button disabled={!canAct} onClick={() => act(untapAll)}>Alles enttappen</button>
+              <button onClick={openMore}>Mehr ▾</button>
+            </div>
+            <div className={'turnbar' + (enforce && turn && !canAct ? ' waiting' : '')}>
+              {turnText}{enforce && turn && !canAct ? ' · Du bist noch nicht dran.' : ''}
+            </div>
+
+            {tab === 'table' ? (
+              <Table players={players} mySeat={mySeat} />
+            ) : (
+              <div className="play-main" style={{ paddingBottom: fanCw * 1.4 + 90 }}>
+                <div className="mine-board">
+                  <MyBoard player={{ seat: mySeat, name: 'Du', state: mine }} />
+                </div>
+              </div>
+            )}
+            {tab === 'play' && (
+              <HandFan hand={mine.zones.hand} cards={cards} cw={fanCw} drag={drag}
+                bind={(inst) => bindCard(mySeat, 'hand', inst)} />
+            )}
+          </>
+         )}
+        {overlays}
       </div>
-      {err && <p className="error pad">{err}</p>}
-
-      {mine === undefined ? <div className="center">Lade…</div> :
-       mine === null ? (
-        <div className="panel narrow"><DeckPicker cards={cards} onPick={(d) => commit(buildPlayer(d, cards, settings))} /></div>
-       ) : !playing ? (
-        <Setup mine={mine} cards={cards}
-          onBattlefield={(iid) => act((p) => pickBattlefield(p, iid))}
-          onChampion={(iid) => act((p) => pickChampion(p, iid))} />
-       ) : tab === 'table' ? (
-        <div style={{ paddingBottom: selInfo ? 130 : 20 }}>
-          <Table players={players} cards={cards} settings={settings} mySeat={mySeat} selId={sel?.id} onCard={onCard} onZone={onZone} />
-        </div>
-       ) : (
-        <div className="play-main" style={{ paddingBottom: fanH + (selInfo ? 130 : 20) }}>
-          <div className="toolbar">
-            <span className="points">
-              <button onClick={() => act((p) => addPoints(p, -1))}>−</button>
-              <strong>{mine.points} Punkte</strong>
-              <button onClick={() => act((p) => addPoints(p, 1))}>+</button>
-            </span>
-            <button onClick={() => act((p) => draw(p, 4))}>4 Karten ziehen</button>
-            <button onClick={() => act(untapAll)}>Alles enttappen</button>
-            <button onClick={() => act((p) => shuffleZone(p, 'deck'))}>Deck mischen</button>
-            <button onClick={() => act((p) => shuffleZone(p, 'runeDeck'))}>Runendeck mischen</button>
-            <button onClick={() => { if (confirm('Neues Deck wählen? Dein Spielstand wird zurückgesetzt.')) { setSel(null); commit(null) } }}>Neues Deck</button>
-          </div>
-          <div className="mine-board">
-            <PlayerArea player={{ seat: mySeat, name: 'Dein Spiel', state: mine }} cards={cards} settings={settings} isMe selId={sel?.id} onCard={onCard} onZone={onZone} />
-          </div>
-        </div>
-       )}
-
-      {bar}
-      {playing && tab === 'play' && (
-        <HandFan hand={mine.zones.hand} cards={cards} selId={sel?.id} cw={fanCw}
-          onSelect={(inst) => onCard(mySeat, 'hand', inst)} />
-      )}
-      {modals}
-    </div>
+    </GameCtx.Provider>
   )
 }
