@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabase'
-import { KINDS, COLORS, DECK_RULES, analyzeDeck, canAdd, colorsOf } from './game'
+import { KINDS, COLORS, DECK_RULES, analyzeDeck, canAdd, colorsOf, parseDeckList, formatDeckList } from './game'
+import CardImg from './CardImg'
+
+export const COLOR_HEX = { Fury: '#e5584a', Calm: '#4fb98a', Mind: '#4f94e8', Body: '#f0953a', Chaos: '#a463e0', Order: '#e8c547' }
+const KIND_FILTERS = [...KINDS, 'Signature']
 
 export default function DeckBuilder() {
   const [cards, setCards] = useState([])
@@ -9,8 +13,10 @@ export default function DeckBuilder() {
   const [name, setName] = useState('Neues Deck')
   const [qty, setQty] = useState({})
   const [q, setQ] = useState('')
-  const [kind, setKind] = useState('')
-  const [color, setColor] = useState('')
+  const [kinds, setKinds] = useState([])       // leer = alle Arten
+  const [colors, setColors] = useState([])     // leer = alle Farben
+  const [champ, setChamp] = useState(null)     // gewählter Champion (kommt beim Spielstart direkt in die Champion-Zone)
+  const [listText, setListText] = useState('')
   const [msg, setMsg] = useState('')
 
   const loadDecks = async () => {
@@ -25,11 +31,13 @@ export default function DeckBuilder() {
   const byId = useMemo(() => Object.fromEntries(cards.map((c) => [c.id, c])), [cards])
   const a = useMemo(() => analyzeDeck(qty, byId), [qty, byId])
   // Farbfilter trifft beide Farben einer Karte (zweifarbige Legends und Signature-Karten erscheinen bei beiden Farben)
+  // Filter: nichts gewählt = alles; sonst genügt es, wenn die Karte mindestens eine der gewählten Farben bzw. Arten hat.
   const shown = cards.filter(
     (c) => c.name.toLowerCase().includes(q.toLowerCase())
-      && (!kind || (kind === 'Signature' ? !!c.signature : c.kind === kind))
-      && (!color || colorsOf(c).includes(color)),
+      && (!kinds.length || kinds.some((k) => (k === 'Signature' ? !!c.signature : c.kind === k)))
+      && (!colors.length || colorsOf(c).some((x) => colors.includes(x))),
   )
+  const toggle = (set, v) => set((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]))
 
   function add(card) {
     const reason = canAdd(qty, byId, card)
@@ -42,7 +50,7 @@ export default function DeckBuilder() {
     setQty((cur) => {
       const n = (cur[id] || 0) - 1
       const next = { ...cur, [id]: n }
-      if (n <= 0) delete next[id]
+      if (n <= 0) { delete next[id]; if (id === champ) setChamp(null) }
       return next
     })
   }
@@ -50,11 +58,24 @@ export default function DeckBuilder() {
   function open(d) {
     setDeckId(d.id); setName(d.name); setMsg('')
     setQty(Object.fromEntries((d.cards || []).map((e) => [e.card_id, e.qty])))
+    setChamp((d.cards || []).find((e) => e.champion)?.card_id || null)
   }
-  function fresh() { setDeckId(null); setName('Neues Deck'); setQty({}); setMsg('') }
+  function fresh() { setDeckId(null); setName('Neues Deck'); setQty({}); setChamp(null); setMsg('') }
+
+  // Deckliste einlesen: Abschnitte Legend / Champion / MainDeck / Battlefields / Runes, Zeilen wie "3 Kartenname"
+  function importList() {
+    const r = parseDeckList(listText, cards)
+    if (!Object.keys(r.qty).length) return setMsg('In der Liste wurde keine bekannte Karte gefunden.')
+    setQty(r.qty)
+    setChamp(r.champion)
+    const bits = [`${Object.values(r.qty).reduce((a, b) => a + b, 0)} Karten übernommen`]
+    if (r.side) bits.push(`Sideboard (${r.side} Karten) wird nicht gespielt und ignoriert`)
+    if (r.missing.length) bits.push(`nicht gefunden: ${r.missing.join('; ')}`)
+    setMsg(bits.join('. ') + '.')
+  }
 
   async function save() {
-    const list = Object.entries(qty).map(([card_id, n]) => ({ card_id, qty: n }))
+    const list = Object.entries(qty).map(([card_id, n]) => (card_id === champ ? { card_id, qty: n, champion: true } : { card_id, qty: n }))
     const res = deckId
       ? await supabase.from('decks').update({ name, cards: list }).eq('id', deckId).select().single()
       : await supabase.from('decks').insert({ name, cards: list }).select().single()
@@ -103,11 +124,27 @@ export default function DeckBuilder() {
         <ul className="decklist">
           {inDeck.map(({ card, n }) => (
             <li key={card.id}>
-              <span>{n}× {card.name}</span>
-              <span><button onClick={() => remove1(card.id)}>−</button><button onClick={() => add(card)}>+</button></span>
+              <span>{n}× {card.name}{card.id === champ && <span className="chip gold"> Champion</span>}</span>
+              <span>
+                {(card.kind === 'Champion' || card.id === champ) && (
+                  <button title="Als Champion festlegen (startet direkt in der Champion-Zone)" className={card.id === champ ? 'primary' : ''}
+                    onClick={() => setChamp(card.id === champ ? null : card.id)}>★</button>
+                )}
+                <button onClick={() => remove1(card.id)}>−</button><button onClick={() => add(card)}>+</button>
+              </span>
             </li>
           ))}
         </ul>
+        <details className="importbox">
+          <summary>Deckliste einfügen / anzeigen</summary>
+          <textarea rows="10" value={listText} onChange={(e) => setListText(e.target.value)}
+            placeholder={'Legend:\n1 Leona, Radiant Dawn\n\nChampion:\n1 Leona, Zealot\n\nMainDeck:\n3 Solari Shieldbearer\n...\n\nBattlefields:\n1 Targon\'s Peak\n\nRunes:\n6 Calm Rune\n6 Order Rune'} />
+          <div className="row">
+            <button className="primary" onClick={importList} disabled={!cards.length}>Liste übernehmen</button>
+            <button onClick={() => setListText(formatDeckList(qty, byId, champ))}>Aktuelles Deck als Liste</button>
+          </div>
+          <p className="muted small">Ersetzt das Deck im Editor. Gespeichert wird erst mit „Speichern“. Runen werden über die Farbe gefunden („6 Calm Rune“).</p>
+        </details>
         <div className="row">
           <button className="primary" onClick={save}>Speichern</button>
           {deckId && <button className="danger" onClick={del}>Löschen</button>}
@@ -116,17 +153,24 @@ export default function DeckBuilder() {
       </aside>
 
       <section>
-        <div className="row">
+        <div className="filters">
           <input placeholder="Karte suchen" value={q} onChange={(e) => setQ(e.target.value)} />
-          <select value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="">Alle Arten</option>
-            {KINDS.map((k) => <option key={k}>{k}</option>)}
-            <option>Signature</option>
-          </select>
-          <select value={color} onChange={(e) => setColor(e.target.value)}>
-            <option value="">Alle Farben</option>
-            {COLORS.map((k) => <option key={k}>{k}</option>)}
-          </select>
+          <div className="fgroup" role="group" aria-label="Farben">
+            {COLORS.map((k) => (
+              <button key={k} className={'fbtn' + (colors.includes(k) ? ' on' : '')} aria-pressed={colors.includes(k)}
+                style={{ '--fc': COLOR_HEX[k] }} onClick={() => toggle(setColors, k)}>
+                <i className="cdot" />{k}
+              </button>
+            ))}
+          </div>
+          <div className="fgroup" role="group" aria-label="Arten">
+            {KIND_FILTERS.map((k) => (
+              <button key={k} className={'fbtn' + (kinds.includes(k) ? ' on' : '')} aria-pressed={kinds.includes(k)} onClick={() => toggle(setKinds, k)}>{k}</button>
+            ))}
+          </div>
+          {(colors.length > 0 || kinds.length > 0) && (
+            <button className="link" onClick={() => { setColors([]); setKinds([]) }}>Filter zurücksetzen · {shown.length} Karten</button>
+          )}
         </div>
         {cards.length === 0 && <p className="muted">Noch keine Karten vorhanden. Der Master lädt sie unter „Karten verwalten“ hoch.</p>}
         {groups.map(([title, test]) => {
@@ -138,7 +182,7 @@ export default function DeckBuilder() {
               <div className="pick-grid">
                 {list.map((c) => (
                   <div key={c.id} className={'pick' + (qty[c.id] ? ' has' : '')}>
-                    <img src={c.image_url} alt={c.name} loading="lazy" onClick={() => add(c)} />
+                    <CardImg src={c.image_url} alt={c.name} loading="lazy" battlefield={c.kind === 'Battlefield'} onClick={() => add(c)} />
                     <div className="pickbar">
                       <button onClick={() => remove1(c.id)}>−</button>
                       <span>{qty[c.id] || 0}</span>
