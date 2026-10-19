@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase, fetchAllCards } from './supabase'
 import { KINDS, COLORS, DECK_RULES, analyzeDeck, canAdd, colorsOf, legendColors, fitsLegend, parseDeckList, formatDeckList } from './game'
 import CardImg from './CardImg'
+import Pager, { usePaging, pageSlice } from './Pager'
 
 export const COLOR_HEX = { Fury: '#e5584a', Calm: '#4fb98a', Mind: '#4f94e8', Body: '#f0953a', Chaos: '#a463e0', Order: '#e8c547' }
 const KIND_FILTERS = [...KINDS, 'Signature']
@@ -65,6 +66,7 @@ export default function DeckBuilder() {
   const [missing, setMissing] = useState([])    // beim Import nicht gefundene Karten
   const [sorts, setSorts] = useState(() => { try { return JSON.parse(localStorage.getItem('rt:sorts')) || [] } catch { return [] } })
   useEffect(() => { try { localStorage.setItem('rt:sorts', JSON.stringify(sorts)) } catch { /* egal */ } }, [sorts])
+  const paging = usePaging('deck', [q, kinds, colors, sorts])
 
   const loadDecks = async () => {
     const { data } = await supabase.from('decks').select('*').order('created_at', { ascending: false })
@@ -243,8 +245,9 @@ export default function DeckBuilder() {
           )}
         </div>
         {cards.length === 0 && <p className="muted">Noch keine Karten vorhanden. Der Master lädt sie unter „Karten verwalten“ hoch.</p>}
+        <Pager total={shown.length} paging={paging} />
         <div className="pick-grid">
-          {shown.map((c) => (
+          {pageSlice(shown, paging).items.map((c) => (
             <div key={c.id} className={'pick' + (qty[c.id] ? ' has' : '') + (c.kind !== 'Legend' && !fitsLegend(c, allowed) ? ' blocked' : '')}
                  title={c.kind !== 'Legend' && !fitsLegend(c, allowed) ? `Passt nicht zur Legend (${allowed.join(' / ')})` : undefined}>
               <CardImg src={c.image_url} alt={c.name} loading="lazy" battlefield={c.kind === 'Battlefield'} onClick={() => add(c)} />
@@ -260,6 +263,7 @@ export default function DeckBuilder() {
             </div>
           ))}
         </div>
+        <Pager total={shown.length} paging={paging} />
       </section>
     </div>
   )

@@ -3,6 +3,7 @@ import { supabase, fetchAllCards } from './supabase'
 import { KINDS, COLORS, parseCardFilename, allowsSecondColor, colorsOf as colorsOfCard } from './game'
 import { parseSetNumber, extractCode, fetchCardInfo, mapApiCard } from './cardlookup'
 import CardImg from './CardImg'
+import Pager, { usePaging, pageSlice } from './Pager'
 
 const dbHint = (m) => (/energy|might|power/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-5.sql im SQL Editor ausführen.'
   : /color2|signature|\bcode\b/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-4.sql im SQL Editor ausführen.' : m)
@@ -23,6 +24,7 @@ export default function Admin({ user }) {
   const [sel, setSel] = useState([])              // ausgewählte Karten-IDs
   const [recheckMode, setRecheckMode] = useState('fill')
   const [pfilter, setPfilter] = useState('all') // Vorschau-Filter: all | other | nocolor | notfound
+  const paging = usePaging('admin', [q, fkind, fcolor, fmode])
   const [big, setBig] = useState(null)            // Karte, die gerade vergrößert wird
 
   const load = async () => {
@@ -338,8 +340,9 @@ export default function Admin({ user }) {
           {selected.length > 0 && <button className="link" onClick={() => setSel([])}>Auswahl aufheben</button>}
         </div>
         <p className="muted small">Der Code (z. B. OGN-023) wird aus dem Code-Feld gelesen, sonst aus dem Kartennamen. Zeichen dahinter wie * oder S werden ignoriert.</p>
+        <Pager total={shown.length} paging={paging} />
         <div className="admin-grid">
-          {shown.map((c) => {
+          {pageSlice(shown, paging).items.map((c) => {
             const two = allowsSecondColor(c.kind, c.signature)
             return (
               <div key={c.id} className={'admin-card' + (sel.includes(c.id) ? ' picked' : '')}>
@@ -395,6 +398,7 @@ export default function Admin({ user }) {
             )
           })}
         </div>
+        <Pager total={shown.length} paging={paging} />
       </section>
       {big && (
         <div className="modal-bg preview-bg" onClick={() => setBig(null)}>

@@ -547,3 +547,8 @@ fieldset { border-color: #2c3a4d; border-radius: 16px; }
 .missingbox.wide { grid-column: 1 / -1; width: 100%; box-sizing: border-box; margin: 0 0 4px; }
 .missingbox.wide ul { columns: 3 260px; max-height: none; list-style: none; padding-left: 0; }
 .missingbox.wide li { break-inside: avoid; padding: 2px 0; }
+.pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
+.pager label { display: inline-flex; gap: 6px; align-items: center; font-size: .86rem; }
+.pager select { min-height: 34px; padding: 2px 8px; }
+.pager button { min-height: 34px; padding: 0 12px; }
+.pager .pageinfo { font-size: .86rem; color: var(--muted, #9aa7b8); padding: 0 4px; }
