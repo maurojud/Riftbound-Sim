@@ -254,3 +254,49 @@ h1 { font-size: 2.2rem; font-weight: 800; }
 .ghost img { width: 100%; border-radius: 8px; display: block; }
 
 @media (max-width: 760px) { .half { flex-direction: column; } .tvtable { --cw: 52px; } }
+
+.preview input, .preview select { min-height: 34px; padding: 4px 8px; width: 100%; min-width: 90px; }
+
+/* ───────── v5: gemeinsame Battlefields, Marken, Hide, Vorschau ───────── */
+.pile { position: relative; }
+.pile-face { position: relative; }
+.pile.off { cursor: default; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+.cap { display: flex; flex-direction: column; font-size: .72rem; line-height: 1.25; padding: 0 2px; min-height: 2.5em; }
+.cap b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.bfrow { display: flex; gap: 8px; --cw: 72px; --xs: .9; }
+.bfrow .zonebox.bf { flex: 1; min-width: 0; }
+@media (min-width: 900px) { .bfrow { --cw: 92px; } }
+.bfbody { display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; width: 100%; }
+.bfcard { flex: none; }
+.bfunits { display: flex; flex-wrap: wrap; gap: 5px; flex: 1; min-width: 0; align-content: flex-start; min-height: calc(var(--cw) * 1.4); }
+.zonebox.bf .zc { display: block; }
+.card.owned { outline: 2px solid var(--oc); outline-offset: 1px; border-radius: 8px; }
+
+.marks { position: absolute; left: 2px; right: 2px; bottom: 2px; display: flex; flex-wrap: wrap; gap: 2px; pointer-events: none; z-index: 2; }
+.mk { background: #000c; color: #fff; border-radius: 4px; padding: 0 4px; line-height: 1.35; font-weight: 700; font-size: clamp(8px, calc(var(--w) * .13), 12px); }
+.mk.buff { background: #2f7d4f; } .mk.damage { background: #b3382d; } .mk.might { background: #2d5f9a; }
+.mk.marker { background: #5b4a8a; } .mk.stunned { background: #8a6d1a; }
+
+.cp { background: #0f2630; border: 1px solid #346b7e; border-radius: 12px; padding: 8px 10px; width: 224px; display: flex; flex-direction: column; gap: 6px; }
+.cp-row { display: flex; justify-content: space-between; align-items: center; font-size: .9rem; }
+.cp-ctl { display: flex; gap: 8px; align-items: center; }
+.cp-ctl b { min-width: 30px; text-align: center; }
+.cp-ctl button, .cp-chips button { min-height: 32px; padding: 2px 10px; }
+.cp-ctl button { min-width: 34px; }
+.cp-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.cp-chips .on { background: var(--gold); color: #1b1608; border-color: var(--gold); }
+.floating { position: fixed; z-index: 45; box-shadow: 0 10px 30px #000a; border-radius: 12px; }
+
+.preview-bg { background: #000d; z-index: 50; }
+.pv { display: flex; flex-direction: column; align-items: center; gap: 10px; max-height: 96vh; }
+.pv .big { max-height: 68vh; cursor: zoom-out; }
+.pv-bar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-items: flex-start; }
+
+.hidechip { position: absolute; top: 3px; left: 3px; z-index: 3; font-size: .62rem; padding: 1px 7px; min-height: 0; line-height: 1.5; border-radius: 999px; background: #000b; border: 1px solid #ffffff55; }
+.hidechip.on { background: var(--gold); color: #1b1608; border-color: var(--gold); font-weight: 700; }
+
+.sd { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 2px; z-index: 3; }
+.sdh { flex: 1; display: grid; place-items: center; font-size: .6rem; color: var(--gold); background: #0b1c24ee; border: 1px dashed var(--gold); border-radius: 6px; }
+.sdh.dropover { background: #e3b04b66; color: #fff; border-style: solid; }
