@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { supabase } from './supabase'
+import { supabase, fetchAllCards } from './supabase'
 import { go } from './nav'
 import { Table, MyBoard, CardView, CounterPanel, GameCtx, seatColor } from './Table'
 import CardImg, { applyBfRotation, setBfRotation } from './CardImg'
@@ -381,7 +381,7 @@ export default function Session({ id, view, user }) {
 
   useEffect(() => {
     loadRow(); loadMembers()
-    supabase.from('cards').select('*').then(({ data }) => setCards(Object.fromEntries((data || []).map((c) => [c.id, c]))))
+    fetchAllCards().then(({ data }) => setCards(Object.fromEntries((data || []).map((c) => [c.id, c]))))
     const ch = supabase
       .channel(`table-${id}`, { config: { broadcast: { self: false } } })
       .on('broadcast', { event: 'seat' }, ({ payload }) => setLive((l) => ({ ...l, [payload.seat]: payload.state })))

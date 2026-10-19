@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { supabase } from './supabase'
+import { supabase, fetchAllCards } from './supabase'
 import { KINDS, COLORS, DECK_RULES, analyzeDeck, canAdd, colorsOf, legendColors, fitsLegend, parseDeckList, formatDeckList } from './game'
 import CardImg from './CardImg'
 
@@ -71,7 +71,7 @@ export default function DeckBuilder() {
     setDecks(data || [])
   }
   useEffect(() => {
-    supabase.from('cards').select('*').order('name').then(({ data }) => setCards(data || []))
+    fetchAllCards('name', true).then(({ data }) => setCards(data || []))
     loadDecks()
   }, [])
 

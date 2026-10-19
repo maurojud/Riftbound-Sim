@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { supabase } from './supabase'
+import { supabase, fetchAllCards } from './supabase'
 import { KINDS, COLORS, parseCardFilename, allowsSecondColor, colorsOf as colorsOfCard } from './game'
 import { parseSetNumber, extractCode, fetchCardInfo, mapApiCard } from './cardlookup'
 import CardImg from './CardImg'
@@ -26,7 +26,7 @@ export default function Admin({ user }) {
   const [big, setBig] = useState(null)            // Karte, die gerade vergrößert wird
 
   const load = async () => {
-    const { data } = await supabase.from('cards').select('*').order('created_at', { ascending: false })
+    const { data } = await fetchAllCards('created_at', false)
     setCards(data || [])
   }
   useEffect(() => { load() }, [])

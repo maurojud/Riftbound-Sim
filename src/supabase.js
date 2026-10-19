@@ -14,3 +14,16 @@ const key = strip(import.meta.env.VITE_SUPABASE_ANON_KEY)
 
 export const supabase = createClient(url || 'http://localhost', key || 'missing-key')
 export const configured = !!url
+
+// Supabase liefert pro Abfrage höchstens 1000 Zeilen. Karten daher seitenweise holen, bis alle da sind.
+export async function fetchAllCards(orderBy = 'created_at', ascending = false) {
+  const PAGE = 1000
+  const all = []
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase.from('cards').select('*').order(orderBy, { ascending }).order('id').range(from, from + PAGE - 1)
+    if (error) return { data: all, error }
+    all.push(...(data || []))
+    if (!data || data.length < PAGE) break
+  }
+  return { data: all, error: null }
+}
