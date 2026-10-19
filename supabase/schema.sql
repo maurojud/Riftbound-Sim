@@ -36,6 +36,9 @@ create table public.cards (
   image_url text not null,
   image_path text,
   color text,                        -- Runenfarbe/Domain, z. B. Fury, Calm, Mind, Body, Chaos, Order
+  color2 text,                       -- zweite Farbe, nur für Legends und Signature-Karten
+  signature boolean not null default false,  -- Signature-Karte (z. B. Signature Spell)
+  code text,                         -- Set-Nummer, z. B. SFD-042
   created_at timestamptz not null default now()
 );
 alter table public.cards enable row level security;
