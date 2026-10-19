@@ -543,10 +543,14 @@ export function showCards(p, cardIds) {
 // ───────── Deckliste importieren ─────────
 // Format: Abschnitte "Legend:", "Champion:", "MainDeck:", "Battlefields:", "Runes:", "Sideboard:" und Zeilen "3 Kartenname".
 const norm = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[’'`´]/g, "'").replace(/\s+/g, ' ').trim()
+// Schlüssel für den Namensvergleich: nur Buchstaben und Ziffern, damit "Leona, Zealot", "Leona - Zealot" und "Leona Zealot" gleich sind.
+// Klammern und Codes dahinter wie "(OGN-123)" oder "[OGN]" werden ignoriert.
+const nameKey = (s) => norm(s).replace(/\(.*?\)|\[.*?\]/g, ' ').replace(/['’`´]/g, '').replace(/[^a-z0-9]+/g, '')
+const nameParts = (s) => norm(s).replace(/\(.*?\)|\[.*?\]/g, ' ').split(/\s*(?:,|\s[-–—]\s|\||\/|:)\s*/).map(nameKey).filter((x) => x.length >= 3)
 export function parseDeckList(text, allCards) {
   const byName = new Map()
   for (const c of allCards) {
-    const key = norm(c.name)
+    const key = nameKey(c.name)
     if (!byName.has(key)) byName.set(key, [])
     byName.get(key).push(c)
   }
@@ -568,11 +572,16 @@ export function parseDeckList(text, allCards) {
     const n = Number(m[1])
     const name = m[2].trim()
     if (section === 'side') { side += n; continue }
-    let pool = byName.get(norm(name)) || []
-    if (!pool.length) { // unscharf: Name steht am Anfang eines einzigen Kartennamens (oder umgekehrt)
-      const nn = norm(name)
-      const hits = allCards.filter((c) => { const k = norm(c.name); return nn.length >= 4 && (k.startsWith(nn) || nn.startsWith(k)) })
-      if (new Set(hits.map((c) => norm(c.name))).size === 1) pool = hits
+    const nk = nameKey(name)
+    let pool = byName.get(nk) || []
+    if (!pool.length && nk.length >= 4) { // unscharf: Anfang des Namens oder nur ein Teil davor/nach Komma bzw. Bindestrich, aber nur bei eindeutigem Treffer
+      const uniq = (hits) => new Set(hits.map((c) => nameKey(c.name))).size === 1
+      let hits = allCards.filter((c) => { const k = nameKey(c.name); return k.startsWith(nk) || nk.startsWith(k) })
+      if (!hits.length || !uniq(hits)) {
+        const mine = nameParts(name)
+        hits = allCards.filter((c) => nameParts(c.name).some((x) => mine.includes(x)))
+      }
+      if (hits.length && uniq(hits)) pool = hits
     }
     if (section === 'rune' && !pool.length) {
       // "6 Calm Rune": über die Farbe suchen

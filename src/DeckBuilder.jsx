@@ -111,7 +111,7 @@ export default function DeckBuilder() {
     setChamp(r.champion)
     const bits = [`${Object.values(r.qty).reduce((a, b) => a + b, 0)} Karten übernommen`]
     if (r.side) bits.push(`Sideboard (${r.side} Karten) wird nicht gespielt und ignoriert`)
-    if (r.missing.length) bits.push(`${r.missing.length} Karten nicht gefunden (siehe Liste unten), bitte von Hand hinzufügen`)
+    if (r.missing.length) bits.push(`${r.missing.length} Karten nicht gefunden (Liste oben auf der Seite), bitte von Hand hinzufügen`)
     setMsg(bits.join('. ') + '.')
   }
 
@@ -144,6 +144,13 @@ export default function DeckBuilder() {
 
   return (
     <div className="deckbuilder">
+      {missing.length > 0 && (
+        <div className="missingbox wide" role="alert">
+          <div className="row"><b>{missing.length} Karten aus der Liste wurden nicht gefunden – bitte manuell hinzufügen:</b>
+            <button className="link" onClick={() => setMissing([])}>Ausblenden</button></div>
+          <ul>{missing.map((m, i) => <li key={i}>{m}</li>)}</ul>
+        </div>
+      )}
       <aside className="panel">
         <h2>Meine Decks</h2>
         <div className="stack">
@@ -192,13 +199,6 @@ export default function DeckBuilder() {
           {deckId && <button className="danger" onClick={del}>Löschen</button>}
         </div>
         {msg && <p className="warn">{msg}</p>}
-        {missing.length > 0 && (
-          <div className="missingbox" role="alert">
-            <b>Nicht gefunden ({missing.length}) – bitte manuell hinzufügen:</b>
-            <ul>{missing.map((m, i) => <li key={i}>{m}</li>)}</ul>
-            <button className="link" onClick={() => setMissing([])}>Liste ausblenden</button>
-          </div>
-        )}
       </aside>
 
       <section>
