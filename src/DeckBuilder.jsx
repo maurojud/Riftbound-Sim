@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabase'
-import { KINDS, COLORS, DECK_RULES, analyzeDeck, canAdd } from './game'
+import { KINDS, COLORS, DECK_RULES, analyzeDeck, canAdd, colorsOf } from './game'
 
 export default function DeckBuilder() {
   const [cards, setCards] = useState([])
@@ -24,8 +24,11 @@ export default function DeckBuilder() {
 
   const byId = useMemo(() => Object.fromEntries(cards.map((c) => [c.id, c])), [cards])
   const a = useMemo(() => analyzeDeck(qty, byId), [qty, byId])
+  // Farbfilter trifft beide Farben einer Karte (zweifarbige Legends und Signature-Karten erscheinen bei beiden Farben)
   const shown = cards.filter(
-    (c) => c.name.toLowerCase().includes(q.toLowerCase()) && (!kind || c.kind === kind) && (!color || c.color === color),
+    (c) => c.name.toLowerCase().includes(q.toLowerCase())
+      && (!kind || (kind === 'Signature' ? !!c.signature : c.kind === kind))
+      && (!color || colorsOf(c).includes(color)),
   )
 
   function add(card) {
@@ -118,6 +121,7 @@ export default function DeckBuilder() {
           <select value={kind} onChange={(e) => setKind(e.target.value)}>
             <option value="">Alle Arten</option>
             {KINDS.map((k) => <option key={k}>{k}</option>)}
+            <option>Signature</option>
           </select>
           <select value={color} onChange={(e) => setColor(e.target.value)}>
             <option value="">Alle Farben</option>
@@ -137,8 +141,12 @@ export default function DeckBuilder() {
                     <img src={c.image_url} alt={c.name} loading="lazy" onClick={() => add(c)} />
                     <div className="pickbar">
                       <button onClick={() => remove1(c.id)}>−</button>
-                      <span>{qty[c.id] || 0}{c.kind === 'Rune' && c.color ? ` · ${c.color}` : ''}</span>
+                      <span>{qty[c.id] || 0}</span>
                       <button onClick={() => add(c)}>+</button>
+                    </div>
+                    <div className="cap" title={c.name}>
+                      <b>{c.name}</b>
+                      <span className="muted">{[...colorsOf(c), c.signature ? 'Signature' : null].filter(Boolean).join(' / ') || c.kind}</span>
                     </div>
                   </div>
                 ))}
