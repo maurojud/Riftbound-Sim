@@ -20,8 +20,20 @@ const SORT_KEYS = {
   number: ['Nummer', (c) => (Number.isNaN(numOf(c)) ? null : numOf(c))],
 }
 const cmpVals = (a, b) => (typeof a === 'string' || typeof b === 'string' ? String(a).localeCompare(String(b)) : a - b)
+// Grundsortierung (immer aktiv): Set, dann Kartennummer; Varianten (OGN-234s, 121a, *) direkt hinter der Originalkarte
+const baseKey = (c) => {
+  const re = /(?:^|[^A-Za-z])([A-Za-z]{2,4})[-_\s]?(T|SP)?\s?0*(\d{1,3})([A-Za-z*]*)/i
+  const m = (c.code || '').match(re) || (c.name || '').match(re)
+  if (!m) return { set: '\uffff', kind: 3, num: 0, suf: '', name: (c.name || '').toLowerCase() } // ohne Code ganz ans Ende
+  let suf = m[4] || ''
+  if (!suf) { const n = (c.name || '').match(re); if (n && n[1].toLowerCase() === m[1].toLowerCase() && n[3] === m[3]) suf = n[4] || '' }
+  return { set: m[1].toLowerCase(), kind: m[2] ? (m[2].toLowerCase() === 't' ? 1 : 2) : 0, num: Number(m[3]), suf: suf.toLowerCase(), name: (c.name || '').toLowerCase() }
+}
+const cmpBase = (x, y) => {
+  const a = baseKey(x), b = baseKey(y)
+  return a.set.localeCompare(b.set) || a.kind - b.kind || a.num - b.num || (a.suf === '' ? -1 : 0) - (b.suf === '' ? -1 : 0) || a.suf.localeCompare(b.suf) || a.name.localeCompare(b.name)
+}
 function sortCards(list, sorts) {
-  if (!sorts.length) return list
   return [...list].sort((x, y) => {
     for (const s of sorts) {
       const f = SORT_KEYS[s.key]?.[1]
@@ -34,7 +46,7 @@ function sortCards(list, sorts) {
       const d = cmpVals(a, b)
       if (d) return s.dir === 'desc' ? -d : d
     }
-    return 0
+    return cmpBase(x, y)
   })
 }
 
@@ -133,13 +145,6 @@ export default function DeckBuilder() {
 
   const R = DECK_RULES
   const check = (ok, text) => <li className={ok ? 'ok' : 'bad'}>{ok ? '✓' : '•'} {text}</li>
-  // Karten nach Art gruppiert anzeigen
-  const groups = [
-    ['Legend', (c) => c.kind === 'Legend'],
-    ['Battlefields', (c) => c.kind === 'Battlefield'],
-    ['Runen', (c) => c.kind === 'Rune'],
-    ['Deck (Units, Spells, Gear …)', (c) => !['Legend', 'Battlefield', 'Rune'].includes(c.kind)],
-  ]
   const inDeck = Object.entries(qty).map(([id, n]) => ({ card: byId[id], n })).filter((e) => e.card)
 
   return (
@@ -238,32 +243,23 @@ export default function DeckBuilder() {
           )}
         </div>
         {cards.length === 0 && <p className="muted">Noch keine Karten vorhanden. Der Master lädt sie unter „Karten verwalten“ hoch.</p>}
-        {groups.map(([title, test]) => {
-          const list = shown.filter(test)
-          if (!list.length) return null
-          return (
-            <div key={title}>
-              <h3 className="grouptitle">{title}</h3>
-              <div className="pick-grid">
-                {list.map((c) => (
-                  <div key={c.id} className={'pick' + (qty[c.id] ? ' has' : '') + (c.kind !== 'Legend' && !fitsLegend(c, allowed) ? ' blocked' : '')}
-                       title={c.kind !== 'Legend' && !fitsLegend(c, allowed) ? `Passt nicht zur Legend (${allowed.join(' / ')})` : undefined}>
-                    <CardImg src={c.image_url} alt={c.name} loading="lazy" battlefield={c.kind === 'Battlefield'} onClick={() => add(c)} />
-                    <div className="pickbar">
-                      <button onClick={() => remove1(c.id)}>−</button>
-                      <span>{qty[c.id] || 0}</span>
-                      <button onClick={() => add(c)}>+</button>
-                    </div>
-                    <div className="cap" title={c.name}>
-                      <b>{c.name}</b>
-                      <span className="muted">{[...colorsOf(c), c.signature ? 'Signature' : null].filter(Boolean).join(' / ') || c.kind}</span>
-                    </div>
-                  </div>
-                ))}
+        <div className="pick-grid">
+          {shown.map((c) => (
+            <div key={c.id} className={'pick' + (qty[c.id] ? ' has' : '') + (c.kind !== 'Legend' && !fitsLegend(c, allowed) ? ' blocked' : '')}
+                 title={c.kind !== 'Legend' && !fitsLegend(c, allowed) ? `Passt nicht zur Legend (${allowed.join(' / ')})` : undefined}>
+              <CardImg src={c.image_url} alt={c.name} loading="lazy" battlefield={c.kind === 'Battlefield'} onClick={() => add(c)} />
+              <div className="pickbar">
+                <button onClick={() => remove1(c.id)}>−</button>
+                <span>{qty[c.id] || 0}</span>
+                <button onClick={() => add(c)}>+</button>
+              </div>
+              <div className="cap" title={c.name}>
+                <b>{c.name}</b>
+                <span className="muted">{[c.code, ...colorsOf(c), c.signature ? 'Signature' : null].filter(Boolean).join(' / ') || c.kind}</span>
               </div>
             </div>
-          )
-        })}
+          ))}
+        </div>
       </section>
     </div>
   )

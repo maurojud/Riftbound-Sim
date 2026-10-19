@@ -156,6 +156,27 @@ export default function Admin({ user }) {
     setMsg(bits.join('. ') + '.')
     load()
   }
+  // Alle ausgewählten Karten löschen (Bilder und Datenbank-Einträge)
+  async function removeSelected() {
+    const list = cards.filter((c) => sel.includes(c.id))
+    if (!list.length) return
+    if (!confirm(`${list.length} Karten wirklich löschen?\n\nGespeicherte Decks, in denen diese Karten vorkommen, verlieren sie dabei.`)) return
+    setBusy(true)
+    let done = 0
+    for (let i = 0; i < list.length; i += 50) {
+      const chunk = list.slice(i, i + 50)
+      setMsg(`Lösche ${Math.min(i + 50, list.length)} von ${list.length}…`)
+      const paths = chunk.map((c) => c.image_path).filter(Boolean)
+      if (paths.length) await supabase.storage.from('cards').remove(paths)
+      const { error } = await supabase.from('cards').delete().in('id', chunk.map((c) => c.id))
+      if (error) { setMsg(error.message); break }
+      done += chunk.length
+    }
+    setBusy(false)
+    setSel([])
+    setMsg(`${done} von ${list.length} Karten gelöscht.`)
+    load()
+  }
   async function remove(c) {
     if (!confirm(`„${c.name}“ löschen?`)) return
     if (c.image_path) await supabase.storage.from('cards').remove([c.image_path])
@@ -313,6 +334,7 @@ export default function Admin({ user }) {
             <option value="full">Komplett neu prüfen (überschreibt)</option>
           </select>
           <button className="primary" disabled={busy || !selected.length} onClick={() => recheck(selected, recheckMode)}>Ausgewählte prüfen und aktualisieren</button>
+          <button className="danger" disabled={busy || !selected.length} onClick={removeSelected}>Ausgewählte löschen ({selected.length})</button>
           {selected.length > 0 && <button className="link" onClick={() => setSel([])}>Auswahl aufheben</button>}
         </div>
         <p className="muted small">Der Code (z. B. OGN-023) wird aus dem Code-Feld gelesen, sonst aus dem Kartennamen. Zeichen dahinter wie * oder S werden ignoriert.</p>
