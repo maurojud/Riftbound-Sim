@@ -15,6 +15,7 @@ export const ZONES = {
 }
 
 export const TARGET_LABEL = {
+  stack: 'Stack',
   hand: 'Hand', base: 'Base', battlefield: 'Battlefield', champion: 'Champion', trash: 'Trash', banish: 'Banish',
   deck: 'Deck', runeDeck: 'Runendeck', deckTop: 'Auf Deck', deckBottom: 'Unter Deck', runes: 'Runenzone', runeDeckTop: 'Auf Runendeck', runeDeckBottom: 'Unter Runendeck',
 }
@@ -102,15 +103,30 @@ export function analyzeDeck(qty, byId) {
   if (r.rune !== R.runes) r.problems.push(`Runen: ${r.rune} von ${R.runes}`)
   if (r.colors.length > R.runeColors) r.problems.push(`Runenfarben: ${r.colors.length} (max. ${R.runeColors})`)
   for (const [name, n] of Object.entries(r.copies)) if (n > R.copies) r.problems.push(`${name}: ${n}× (max. ${R.copies})`)
+  const allowed = legendColors(qty, byId)
+  if (allowed.length) {
+    const off = Object.entries(qty).filter(([id, n]) => n > 0 && byId[id] && kindOf(byId[id]) !== 'legend' && !fitsLegend(byId[id], allowed)).length
+    if (off) r.problems.push(`${off} Karte(n) passen nicht zu den Legend-Farben (${allowed.join(' / ')})`)
+  }
   r.valid = r.problems.length === 0
   return r
 }
+
+// Farben, die die gewählte Legend erlaubt (leer, solange keine Legend im Deck ist)
+export function legendColors(qty, byId) {
+  for (const [id, n] of Object.entries(qty)) if (n > 0 && kindOf(byId[id]) === 'legend') return colorsOf(byId[id])
+  return []
+}
+// Passt die Karte zu den Legend-Farben? Karten ohne Farbe (Battlefields) passen immer; zweifarbige Karten brauchen beide Farben.
+export const fitsLegend = (card, allowed) => !allowed.length || colorsOf(card).every((c) => allowed.includes(c))
 
 // Gibt null zurück, wenn die Karte hinzugefügt werden darf, sonst den Grund.
 export function canAdd(qty, byId, card) {
   const a = analyzeDeck(qty, byId)
   const k = kindOf(card)
   const R = DECK_RULES
+  const allowed = k === 'legend' ? [] : legendColors(qty, byId)
+  if (!fitsLegend(card, allowed)) return `Die Legend erlaubt nur ${allowed.join(' und ')}.`
   if (k === 'legend') return a.legend >= R.legend ? 'Nur 1 Legend erlaubt.' : null
   if (k === 'battlefield') {
     if (a.battlefield >= R.battlefields) return 'Maximal 3 Battlefields.'
@@ -197,15 +213,17 @@ const BOARD = ['base', 'bfUnits']
 const isBoardTarget = (to) => to === 'base' || to.startsWith('bf:')
 const PLAY = ['base', 'bfUnits', 'stack'] // hier bleiben Zielpfeile bestehen
 
-// to: Zonenname, deckTop, deckBottom, runeDeckTop, runeDeckBottom, bf:<Sitz> (Battlefield-Feld) oder stack:<Sitz> (Stack dieses Battlefields).
+// to: Zonenname, deckTop, deckBottom, runeDeckTop, runeDeckBottom, bf:<Sitz> (Battlefield-Feld) oder stack (gemeinsamer Stack).
 // Index 0 = oben bei Decks, letzte Karte = oben im Trash/Banish.
-export function moveCard(p, instId, to) {
+// Angehängte Karten (att) wandern mit ihrer Hauptkarte mit, solange das Ziel im Spiel ist; sonst werden sie gelöst und bleiben liegen.
+export function moveCard(p, instId, to, asKid = false) {
   const n = clone(p)
   const f = findInst(n, instId)
   if (!f) return p
-  const valid = to.startsWith('bf:') || to.startsWith('stack:') || ['deckTop', 'deckBottom', 'runeDeckTop', 'runeDeckBottom'].includes(to)
+  const valid = to.startsWith('bf:') || to === 'stack' || ['deckTop', 'deckBottom', 'runeDeckTop', 'runeDeckBottom'].includes(to)
     || (n.zones[to] && !['bfUnits', 'bfPool', 'stack'].includes(to))
   if (!valid) return p
+  const kidIds = asKid ? [] : Object.values(n.zones).flat().filter((i) => i.att === instId).map((i) => i.id)
   const inst = take(n, instId)
   const boardMove = BOARD.includes(f.zone) && isBoardTarget(to)
   if (!boardMove) {
@@ -213,31 +231,78 @@ export function moveCard(p, instId, to) {
     delete inst.counters
     delete inst.status
   }
-  if (!(PLAY.includes(f.zone) && (isBoardTarget(to) || to.startsWith('stack:')))) delete inst.targets
+  if (!(PLAY.includes(f.zone) && (isBoardTarget(to) || to === 'stack'))) delete inst.targets
   // verdeckt bleibt nur beim Spielen auf Base/Battlefield bestehen (Hand → Tisch oder Tisch → Tisch)
   if (!isBoardTarget(to)) inst.faceDown = false
   delete inst.at
   delete inst.sts
+  if (!asKid) { delete inst.att; delete inst.peek }
   if (to.startsWith('bf:')) { inst.at = Number(to.slice(3)); n.zones.bfUnits.push(inst) }
-  else if (to.startsWith('stack:')) { inst.at = Number(to.slice(6)); inst.sts = Date.now(); n.zones.stack.push(inst) }
+  else if (to === 'stack') { inst.sts = Date.now(); n.zones.stack.push(inst) }
   else if (to === 'deckTop') n.zones.deck.unshift(inst)
   else if (to === 'deckBottom') n.zones.deck.push(inst)
   else if (to === 'runeDeckTop') n.zones.runeDeck.unshift(inst)
   else if (to === 'runeDeckBottom') n.zones.runeDeck.push(inst)
   else n.zones[to].push(inst)
+  let out = n
+  for (const kid of kidIds) {
+    if (isBoardTarget(to)) out = moveCard(out, kid, to, true)
+    else { const k = findInst(out, kid); if (k) { delete k.inst.att; delete k.inst.peek } }
+  }
+  return out
+}
+
+// ───────── Equipment: Karte unter eine andere Karte legen ─────────
+export const PEEK_DEFAULT = 0.22
+export function attachCard(p, instId, hostId) {
+  const n = clone(p)
+  const h = findInst(n, hostId)
+  const f = findInst(n, instId)
+  if (!h || !f || instId === hostId || !BOARD.includes(h.zone) || !BOARD.includes(f.zone) || h.inst.att) return p
+  const kidIds = Object.values(n.zones).flat().filter((i) => i.att === instId).map((i) => i.id)
+  const hostInst = h.inst
+  for (const id of [instId, ...kidIds]) {
+    const inst = take(n, id)
+    inst.att = hostId
+    inst.peek = inst.peek || PEEK_DEFAULT
+    inst.tapped = !!hostInst.tapped
+    delete inst.sts
+    if (h.zone === 'bfUnits') inst.at = hostInst.at
+    else delete inst.at
+    n.zones[h.zone].push(inst)
+  }
+  return n
+}
+export function detachCard(p, instId) {
+  const n = clone(p)
+  const f = findInst(n, instId)
+  if (!f) return p
+  delete f.inst.att
+  delete f.inst.peek
+  return n
+}
+export function changePeek(p, instId, delta) {
+  const n = clone(p)
+  const f = findInst(n, instId)
+  if (!f || !f.inst.att) return p
+  f.inst.peek = Math.round(Math.min(0.6, Math.max(0.08, (f.inst.peek || PEEK_DEFAULT) + delta)) * 100) / 100
   return n
 }
 
 // Wohin darf eine Karte gezogen werden? Runen und Legend sind streng, alles andere frei.
-// bfSeats: Sitze, deren Battlefield im Spiel ist (je ein Ziel bf:<Sitz> und stack:<Sitz>). inst wird gebraucht, um das aktuelle Feld auszuschließen.
+// bfSeats: Sitze, deren Battlefield im Spiel ist (je ein Ziel bf:<Sitz>). inst wird gebraucht, um das aktuelle Feld auszuschließen.
+// hostIds: eigene Karten im Spiel, an die man die Karte als Equipment hängen kann (Ziel card:<id>).
 // 'deck' und 'runeDeck' sind ein einziges Ziel; ob oben oder unten, wird erst nach dem Loslassen gefragt.
-export function targetsFor(card, zone, bfSeats = [], inst = null) {
+export function targetsFor(card, zone, bfSeats = [], inst = null, hostIds = []) {
   const k = kindOf(card)
   let list
   if (k === 'rune') list = zone === 'runes' ? ['runeDeck'] : []
   else if (k === 'legend' || k === 'battlefield') list = []
-  else list = ['base', ...bfSeats.map((s) => `bf:${s}`), ...bfSeats.map((s) => `stack:${s}`), 'hand', 'champion', 'trash', 'banish', 'deck']
-  const here = zone === 'bfUnits' && inst ? `bf:${inst.at}` : zone === 'stack' && inst ? `stack:${inst.at}` : zone
+  else {
+    list = ['base', ...bfSeats.map((s) => `bf:${s}`), 'stack', 'hand', 'champion', 'trash', 'banish', 'deck']
+    if (inst) list.push(...hostIds.filter((id) => id !== inst.id && id !== inst.att).map((id) => `card:${id}`))
+  }
+  const here = zone === 'bfUnits' && inst ? `bf:${inst.at}` : zone
   return list.filter((t) => t !== here)
 }
 
@@ -297,8 +362,11 @@ export function clearMarks(p, instId) {
 
 export function toggleFlag(p, instId, flag) {
   const n = clone(p)
-  const f = findInst(n, instId)
-  if (f) f.inst[flag] = !f.inst[flag]
+  let f = findInst(n, instId)
+  if (!f) return n
+  if (flag === 'tapped' && f.inst.att) f = findInst(n, f.inst.att) || f // angehängte Karten tappen mit ihrer Hauptkarte
+  f.inst[flag] = !f.inst[flag]
+  if (flag === 'tapped') for (const i of Object.values(n.zones).flat()) if (i.att === f.inst.id) i.tapped = f.inst.tapped
   return n
 }
 
@@ -347,33 +415,59 @@ export function pickChampion(p, instId) {
   return n
 }
 
-// ───────── Stack pro Battlefield ─────────
-// Jeder Spieler legt seine Stack-Karten in der eigenen Zone "stack" ab (mit at = Sitz des Battlefields, sts = Zeit).
-// Der gemeinsame Stack ist die nach Zeit sortierte Summe aller Spieler. Ganz oben (letzter Eintrag) wird zuerst aufgelöst.
-export function stackFor(players, bSeat) {
+// ───────── Gemeinsamer Stack ─────────
+// Echte Karten (Spells) liegen in der Zone "stack" des Spielers, Effekte von Karten im Spiel als Verweis in p.fx.
+// Der gemeinsame Stack ist die nach Zeit sortierte Summe aller Spieler; der letzte Eintrag liegt oben und wird zuerst aufgelöst.
+export function stackEntries(players) {
   const list = []
-  for (const pl of players) for (const inst of pl.state?.zones.stack || []) if (inst.at === bSeat) list.push({ inst, seat: pl.seat })
-  return list.sort((a, b) => (a.inst.sts || 0) - (b.inst.sts || 0) || (a.inst.id < b.inst.id ? -1 : 1))
+  for (const pl of players) {
+    for (const inst of pl.state?.zones.stack || []) list.push({ key: inst.id, seat: pl.seat, cardId: inst.cardId, inst, targets: inst.targets || [], sts: inst.sts || 0 })
+    for (const fx of pl.state?.fx || []) list.push({ key: fx.id, seat: pl.seat, cardId: fx.cardId, fx, targets: fx.targets || [], sts: fx.sts || 0 })
+  }
+  return list.sort((a, b) => a.sts - b.sts || (a.key < b.key ? -1 : 1))
 }
-export const stackSig = (list) => list.map((e) => e.inst.id).join('.')
-export const approvedBy = (pl, bSeat, sig) => !!sig && pl.state?.ok?.[bSeat] === sig
-export function setApproval(p, bSeat, sig, on) {
+export const stackSig = (list) => list.map((e) => e.key).join('.')
+export const approvedBy = (pl, sig) => !!sig && pl.state?.ok === sig
+export function setApproval(p, sig, on) {
   const n = clone(p)
-  n.ok = { ...(n.ok || {}) }
-  if (on) n.ok[bSeat] = sig
-  else delete n.ok[bSeat]
+  if (on) n.ok = sig
+  else delete n.ok
   return n
 }
-// Auflösen: Spells und Sonstiges gehen in den Trash, Einheiten aufs Battlefield, Ausrüstung in die Base. Zielpfeile verschwinden.
-export function resolveStackCard(p, instId, bSeat, cards) {
+// Effekt einer Karte im Spiel auf den Stack legen (die Karte bleibt liegen, wird aber aufgedeckt)
+export function addFx(p, instId, targetId) {
+  const f = findInst(p, instId)
+  if (!f || !['base', 'bfUnits', 'champion', 'legend'].includes(f.zone)) return p
+  const n = clone(p)
+  const g = findInst(n, instId)
+  g.inst.faceDown = false
+  n.fx = [...(n.fx || []), { id: 'fx' + uid(), instId, cardId: g.inst.cardId, sts: Date.now(), ...(targetId && targetId !== instId ? { targets: [targetId] } : {}) }]
+  return n
+}
+// Karte spielen: Spells (und alles andere) liegen nur auf dem Stack, Einheiten/Ausrüstung kommen aufs Spielfeld und stehen zusätzlich im Stack.
+export function playToStack(p, instId, targetId, cards) {
   const f = findInst(p, instId)
   if (!f) return p
   const k = kindOf(cards[f.inst.cardId])
-  const to = ['unit', 'champion', 'token'].includes(k) ? `bf:${bSeat}` : k === 'gear' ? 'base' : 'trash'
-  const n = moveCard(p, instId, to)
+  if (['unit', 'champion', 'token', 'gear'].includes(k)) {
+    let n = BOARD.includes(f.zone) || f.zone === 'champion' ? p : moveCard(p, instId, 'base')
+    const g = findInst(n, instId)
+    if (g && g.inst.faceDown) n = toggleFlag(n, instId, 'faceDown')
+    return addFx(n, instId, targetId)
+  }
+  const n = moveCard(p, instId, 'stack')
   const g = findInst(n, instId)
-  if (g) delete g.inst.targets
+  if (g && targetId && targetId !== instId) g.inst.targets = [targetId]
   return n
+}
+// Obersten Eintrag auflösen: Effekt-Verweise verschwinden, Spells gehen in den Trash.
+export function resolveEntry(p, entry) {
+  if (entry.fx) {
+    const n = clone(p)
+    n.fx = (n.fx || []).filter((x) => x.id !== entry.fx.id)
+    return n
+  }
+  return moveCard(p, entry.inst.id, 'trash')
 }
 
 // ───────── Zielpfeile ─────────
@@ -409,9 +503,14 @@ export function giveCard(p, instId, toSeat) {
   const n = clone(p)
   const f = findInst(n, instId)
   if (!f || !['base', 'bfUnits'].includes(f.zone)) return p
-  const inst = take(n, instId)
-  delete inst.targets
-  n.outbox = [...(n.outbox || []), { to: toSeat, zone: f.zone, inst }]
+  const ids = [instId, ...Object.values(n.zones).flat().filter((i) => i.att === instId).map((i) => i.id)] // Equipment geht mit
+  for (const id of ids) {
+    const g = findInst(n, id)
+    const inst = take(n, id)
+    delete inst.targets
+    if (id === instId) { delete inst.att; delete inst.peek }
+    n.outbox = [...(n.outbox || []), { to: toSeat, zone: g.zone, inst }]
+  }
   return n
 }
 export function acceptGift(p, gift) {

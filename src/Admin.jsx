@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabase'
-import { KINDS, COLORS, parseCardFilename, allowsSecondColor } from './game'
-import { parseSetNumber, fetchCardInfo, mapApiCard } from './cardlookup'
+import { KINDS, COLORS, parseCardFilename, allowsSecondColor, colorsOf as colorsOfCard } from './game'
+import { parseSetNumber, extractCode, fetchCardInfo, mapApiCard } from './cardlookup'
 import CardImg from './CardImg'
 
-const dbHint = (m) => (/color2|signature|\bcode\b/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-4.sql im SQL Editor ausführen.' : m)
+const dbHint = (m) => (/energy|might|power/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-5.sql im SQL Editor ausführen.'
+  : /color2|signature|\bcode\b/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-4.sql im SQL Editor ausführen.' : m)
+const BAD_NAME = /\d|[*#_]|\b[A-Za-z]{2,4}-\d/ // Namen mit Ziffern, Sternchen oder einem Code darin sind verdächtig
+const numOrNull = (v) => (v === '' || v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v))
 
 export default function Admin({ user }) {
   const [cards, setCards] = useState([])
@@ -14,6 +17,12 @@ export default function Admin({ user }) {
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
   const [q, setQ] = useState('')
+  const [fkind, setFkind] = useState('')
+  const [fcolor, setFcolor] = useState('')
+  const [fmode, setFmode] = useState('all')       // all | nocode | badname | novalues
+  const [sel, setSel] = useState([])              // ausgewählte Karten-IDs
+  const [recheckMode, setRecheckMode] = useState('fill')
+  const [big, setBig] = useState(null)            // Karte, die gerade vergrößert wird
 
   const load = async () => {
     const { data } = await supabase.from('cards').select('*').order('created_at', { ascending: false })
@@ -42,7 +51,7 @@ export default function Admin({ user }) {
     const list = [...files].map((file, i) => {
       const sn = parseSetNumber(file.name)
       const base = parseCardFilename(file.name, { kind, color })
-      return { key: Date.now() + '-' + i, file, ...base, sn, code: null, note: '', status: sn ? 'lookup' : 'name' }
+      return { key: Date.now() + '-' + i, file, thumb: URL.createObjectURL(file), ...base, sn, code: null, energy: null, might: null, power: null, powerColors: '', note: '', status: sn ? 'lookup' : 'name' }
     })
     setQueue(list)
     for (const r of list.filter((x) => x.sn)) await lookupRow(r.key, r.sn, r.file.name)
@@ -56,7 +65,7 @@ export default function Admin({ user }) {
       if (!c) { update({ ...(fallbackName ? { name: fallbackName.replace(/\.[^.]+$/, '') } : {}), status: 'notfound' }); return }
       const m = mapApiCard(c)
       update({
-        name: m.name, kind: m.kind, color: m.color, color2: m.color2, signature: m.signature, code: m.code, status: 'found',
+        name: m.name, kind: m.kind, color: m.color, color2: m.color2, signature: m.signature, code: m.code, energy: m.energy, might: m.might, power: m.power, powerColors: m.powerColors, status: 'found',
         note: m.ignoredDomain ? `Datenbank nennt 2 Farben, übernommen wird nur ${m.color} (zweite Farbe nur bei Legend/Signature)` : '',
       })
     } catch (e) {
@@ -84,6 +93,8 @@ export default function Admin({ user }) {
       const ins = await supabase.from('cards').insert({
         name: r.name, kind: r.kind, color: r.color || null, color2: allowsSecondColor(r.kind, r.signature) ? r.color2 || null : null,
         signature: !!r.signature, code: r.code || null, image_url: data.publicUrl, image_path: path,
+        energy: numOrNull(r.energy), might: numOrNull(r.might), power: numOrNull(r.power),
+        power_colors: r.powerColors || (numOrNull(r.power) > 0 ? [r.color, r.color2].filter(Boolean).join(',') : null) || null,
       })
       if (ins.error) {
         await supabase.storage.from('cards').remove([path])
@@ -101,20 +112,48 @@ export default function Admin({ user }) {
     if (error) setMsg(dbHint(error.message))
     load()
   }
-  // Name, Art und Farben anhand des Codes neu aus der Kartendatenbank holen
-  async function reload(c) {
-    const sn = parseSetNumber(c.code || '')
-    if (!sn) return
-    setMsg('Frage Kartendatenbank ab…')
-    try {
-      const info = await fetchCardInfo(sn.set, sn.num)
-      if (!info) return setMsg(`${c.code} wurde in der Kartendatenbank nicht gefunden.`)
-      const m = mapApiCard(info)
-      await patch(c.id, { name: m.name, kind: m.kind, color: m.color, color2: m.color2, signature: m.signature, code: m.code })
-      setMsg(`${m.code}: ${m.name} aktualisiert.`)
-    } catch (e) {
-      setMsg('Kartendatenbank nicht erreichbar.')
+  // Karten anhand ihres Codes neu in der Kartendatenbank prüfen. Der Code kommt aus dem Code-Feld, sonst aus dem Kartennamen.
+  // Nur Set-Kürzel und Nummer zählen (OGN-023), Zeichen dahinter wie *, S oder a werden ignoriert.
+  // mode "fill": nur Fehlendes ergänzen (Code, Werte, 2. Farbe, verdächtigen Namen ersetzen). mode "full": alles überschreiben.
+  async function recheck(list, mode) {
+    if (!list.length) return
+    setBusy(true)
+    const res = { ok: 0, nocode: [], notfound: [], error: [] }
+    for (let i = 0; i < list.length; i++) {
+      const c = list[i]
+      setMsg(`Prüfe ${i + 1} von ${list.length}: ${c.name}…`)
+      const sn = extractCode(c.code || '') || extractCode(c.name, true)
+      if (!sn) { res.nocode.push(c.name); continue }
+      try {
+        const info = await fetchCardInfo(sn.set, sn.num)
+        if (!info) { res.notfound.push(`${c.name} (${sn.set.toUpperCase()}-${sn.num})`); continue }
+        const m = mapApiCard(info)
+        const full = { name: m.name, kind: m.kind, color: m.color, color2: m.color2, signature: m.signature, code: m.code, energy: m.energy, might: m.might, power: m.power, power_colors: m.powerColors || null }
+        let values = full
+        if (mode === 'fill') {
+          values = { code: m.code }
+          if (BAD_NAME.test(c.name)) values.name = m.name
+          if (c.color == null && m.color) values.color = m.color
+          if (c.color2 == null && m.color2 && allowsSecondColor(c.kind, c.signature || m.signature)) values.color2 = m.color2
+          if (c.energy == null && m.energy != null) values.energy = m.energy
+          if (c.might == null && m.might != null) values.might = m.might
+          if (c.power == null && m.power != null) values.power = m.power
+          if (!c.power_colors && m.powerColors) values.power_colors = m.powerColors
+        }
+        const { error } = await supabase.from('cards').update(values).eq('id', c.id)
+        if (error) { res.error.push(`${c.name}: ${dbHint(error.message)}`); if (/migration/.test(dbHint(error.message))) break } else res.ok++
+      } catch (e) {
+        res.error.push(`${c.name}: Kartendatenbank nicht erreichbar`)
+        break
+      }
     }
+    setBusy(false)
+    const bits = [`${res.ok} von ${list.length} Karten aktualisiert`]
+    if (res.nocode.length) bits.push(`kein Code gefunden bei: ${res.nocode.join(', ')}`)
+    if (res.notfound.length) bits.push(`nicht in der Datenbank: ${res.notfound.join(', ')}`)
+    if (res.error.length) bits.push(`Fehler: ${res.error.join('; ')}`)
+    setMsg(bits.join('. ') + '.')
+    load()
   }
   async function remove(c) {
     if (!confirm(`„${c.name}“ löschen?`)) return
@@ -123,7 +162,15 @@ export default function Admin({ user }) {
     load()
   }
 
-  const shown = cards.filter((c) => (c.name + ' ' + (c.code || '')).toLowerCase().includes(q.toLowerCase()))
+  const shown = cards.filter((c) => (c.name + ' ' + (c.code || '')).toLowerCase().includes(q.toLowerCase())
+    && (!fkind || (fkind === 'Signature' ? !!c.signature : c.kind === fkind))
+    && (!fcolor || colorsOfCard(c).includes(fcolor))
+    && (fmode === 'all' || (fmode === 'nocode' && !c.code) || (fmode === 'badname' && BAD_NAME.test(c.name))
+      || (fmode === 'novalues' && c.energy == null && c.might == null && c.power == null)))
+  const allSel = shown.length > 0 && shown.every((c) => sel.includes(c.id))
+  const toggleAll = () => setSel(allSel ? sel.filter((id) => !shown.some((c) => c.id === id)) : [...new Set([...sel, ...shown.map((c) => c.id)])])
+  const toggleOne = (id) => setSel((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]))
+  const selected = cards.filter((c) => sel.includes(c.id))
 
   return (
     <div className="stack">
@@ -154,12 +201,13 @@ export default function Admin({ user }) {
         {rows.length > 0 && (
           <>
             <table className="preview">
-              <thead><tr><th>Bilddatei</th><th>Kartenname</th><th>Code / Dateiname (z. B. OGN-001)</th><th>Art</th><th>Signature</th><th>Farbe</th><th>Farbe 2</th><th>Status</th></tr></thead>
+              <thead><tr><th>Bild</th><th>Bilddatei</th><th>Kartenname</th><th>Code / Dateiname (z. B. OGN-001)</th><th>Art</th><th>Signature</th><th>Farbe</th><th>Farbe 2</th><th>Energy / Might / Power</th><th>Status</th></tr></thead>
               <tbody>
                 {rows.map((r) => {
                   const two = allowsSecondColor(r.kind, r.signature)
                   return (
                     <tr key={r.key} className={r.dup ? 'skip' : ''}>
+                      <td><img className="thumb" src={r.thumb} alt="" title="Zum Vergrößern klicken" onClick={() => setBig({ image_url: r.thumb, name: r.name, kind: r.kind })} /></td>
                       <td className="muted">{r.file.name}</td>
                       <td><input value={r.name} onChange={(e) => edit(r.key, { name: e.target.value })} /></td>
                       <td>
@@ -191,6 +239,14 @@ export default function Admin({ user }) {
                         ) : <span className="muted">nur Legend/Signature</span>}
                       </td>
                       <td>
+                        <span className="nums">
+                          {['energy', 'might', 'power'].map((f) => (
+                            <input key={f} type="number" min="0" value={r[f] ?? ''} placeholder={f[0].toUpperCase()} title={f}
+                              onChange={(e) => edit(r.key, { [f]: e.target.value === '' ? null : Number(e.target.value) })} />
+                          ))}
+                        </span>
+                      </td>
+                      <td>
                         {r.dup ? 'schon vorhanden, wird übersprungen'
                           : r.status === 'lookup' ? 'sucht in der Kartendatenbank…'
                           : r.status === 'notfound' ? <span className="warn">nicht gefunden, bitte selbst ausfüllen</span>
@@ -219,15 +275,45 @@ export default function Admin({ user }) {
 
       <section className="panel">
         <div className="row">
-          <h2>{cards.length} Karten</h2>
-          <input placeholder="Suchen" value={q} onChange={(e) => setQ(e.target.value)} />
+          <h2>{shown.length === cards.length ? `${cards.length} Karten` : `${shown.length} von ${cards.length} Karten`}</h2>
+          <input placeholder="Suchen (Name oder Code)" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
+        <div className="row filterbar">
+          <select value={fkind} onChange={(e) => setFkind(e.target.value)}>
+            <option value="">Alle Arten</option>
+            {[...KINDS, 'Signature'].map((k) => <option key={k}>{k}</option>)}
+          </select>
+          <select value={fcolor} onChange={(e) => setFcolor(e.target.value)}>
+            <option value="">Alle Farben</option>
+            {COLORS.map((k) => <option key={k}>{k}</option>)}
+          </select>
+          <select value={fmode} onChange={(e) => setFmode(e.target.value)}>
+            <option value="all">Alle Karten</option>
+            <option value="nocode">Ohne Code</option>
+            <option value="badname">Name verdächtig (Ziffern, *, Code)</option>
+            <option value="novalues">Ohne Energy/Might/Power</option>
+          </select>
+        </div>
+        <div className="row selbar">
+          <label className="check"><input type="checkbox" checked={allSel} onChange={toggleAll} />Alle {shown.length} angezeigten auswählen</label>
+          <span className="muted">{selected.length} ausgewählt</span>
+          <select value={recheckMode} onChange={(e) => setRecheckMode(e.target.value)} title="Wie stark die Karte überschrieben wird">
+            <option value="fill">Nur Fehlendes ergänzen</option>
+            <option value="full">Komplett neu prüfen (überschreibt)</option>
+          </select>
+          <button className="primary" disabled={busy || !selected.length} onClick={() => recheck(selected, recheckMode)}>Ausgewählte prüfen und aktualisieren</button>
+          {selected.length > 0 && <button className="link" onClick={() => setSel([])}>Auswahl aufheben</button>}
+        </div>
+        <p className="muted small">Der Code (z. B. OGN-023) wird aus dem Code-Feld gelesen, sonst aus dem Kartennamen. Zeichen dahinter wie * oder S werden ignoriert.</p>
         <div className="admin-grid">
           {shown.map((c) => {
             const two = allowsSecondColor(c.kind, c.signature)
             return (
-              <div key={c.id} className="admin-card">
-                <CardImg src={c.image_url} alt={c.name} loading="lazy" battlefield={c.kind === 'Battlefield'} />
+              <div key={c.id} className={'admin-card' + (sel.includes(c.id) ? ' picked' : '')}>
+                <label className="selbox"><input type="checkbox" checked={sel.includes(c.id)} onChange={() => toggleOne(c.id)} aria-label="auswählen" /></label>
+                <div className="imgbtn" title="Zum Vergrößern klicken" onClick={() => setBig(c)}>
+                  <CardImg src={c.image_url} alt={c.name} loading="lazy" battlefield={c.kind === 'Battlefield'} />
+                </div>
                 <label className="small muted">Kartenname auf dem Bild
                   <input defaultValue={c.name} onBlur={(e) => e.target.value !== c.name && patch(c.id, { name: e.target.value })} />
                 </label>
@@ -235,11 +321,11 @@ export default function Admin({ user }) {
                   <span className="codeline">
                     <input defaultValue={c.code || ''} placeholder="OGN-001" onBlur={(e) => {
                       const v = e.target.value.trim()
-                      const sn = parseSetNumber(v)
+                      const sn = parseSetNumber(v) || extractCode(v)
                       const val = sn ? `${sn.set}-${sn.num}`.toUpperCase() : v
                       if (val !== (c.code || '')) patch(c.id, { code: val || null })
                     }} />
-                    <button title="Name, Art und Farben aus der Kartendatenbank holen" disabled={!c.code || !parseSetNumber(c.code)} onClick={() => reload(c)}>↻</button>
+                    <button title="Diese Karte neu prüfen" disabled={busy} onClick={() => recheck([c], 'full')}>↻</button>
                   </span>
                 </label>
                 <select value={c.kind} onChange={(e) => patch(c.id, { kind: e.target.value, ...(allowsSecondColor(e.target.value, c.signature) ? {} : { color2: null }) })}>
@@ -259,12 +345,34 @@ export default function Admin({ user }) {
                     {COLORS.filter((k) => k !== c.color).map((k) => <option key={k}>{k}</option>)}
                   </select>
                 )}
+                <span className="nums">
+                  {[['energy', 'Energy'], ['might', 'Might'], ['power', 'Power']].map(([f, label]) => (
+                    <label key={f} className="small muted">{label}
+                      <input type="number" min="0" defaultValue={c[f] ?? ''} key={c.id + f + (c[f] ?? '')}
+                        onBlur={(e) => { const v = numOrNull(e.target.value); if (v !== (c[f] ?? null)) patch(c.id, { [f]: v }) }} />
+                    </label>
+                  ))}
+                </span>
+                <label className="small muted">Power-Farben (z. B. Fury,Mind)
+                  <input defaultValue={c.power_colors || ''} key={c.id + 'pc' + (c.power_colors || '')}
+                    onBlur={(e) => e.target.value !== (c.power_colors || '') && patch(c.id, { power_colors: e.target.value.trim() || null })} />
+                </label>
                 <button className="danger" onClick={() => remove(c)}>Löschen</button>
               </div>
             )
           })}
         </div>
       </section>
+      {big && (
+        <div className="modal-bg preview-bg" onClick={() => setBig(null)}>
+          <div className="pv">
+            <div className={'pvimg' + (big.kind === 'Battlefield' ? ' bf' : '')}>
+              <CardImg className="big" src={big.image_url} alt={big.name} battlefield={big.kind === 'Battlefield'} />
+            </div>
+            <strong>{big.name}</strong>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

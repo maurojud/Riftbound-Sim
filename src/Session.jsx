@@ -7,7 +7,7 @@ import {
   ZONES, DEFAULT_SETTINGS, buildPlayer, moveCard, toggleFlag, draw, drawRune, shuffleZone, untapAll, addPoints,
   pickBattlefield, pickChampion, targetsFor, canTap, canHide, canReveal, canMark, canAim, canGive, changeCounter, toggleStatus, clearMarks,
   analyzeDeck, fixState, findInst, kindOf, toggleTarget, removeTarget, clearTargets, giveCard, acceptGift, dropGift, takeBackGifts,
-  setApproval, resolveStackCard, showCards,
+  setApproval, resolveEntry, showCards, playToStack, addFx, attachCard, detachCard, changePeek,
 } from './game'
 
 export const SETTING_LABELS = {
@@ -27,7 +27,24 @@ const loadPrefs = () => {
 const savePrefs = (p) => { try { localStorage.setItem('rt:view', JSON.stringify(p)) } catch { /* ohne Speicher */ } }
 
 const newest = (a, b) => (!a ? b : !b ? a : (a.ts || 0) >= (b.ts || 0) ? a : b)
-const zoneAt = (x, y) => document.elementFromPoint(x, y)?.closest('[data-drop]')?.dataset.drop || null
+// Ablagezone unter dem Finger/Zeiger. Nur erlaubte Ziele zählen (so fällt eine Karte über einer anderen Karte auf deren Zone zurück).
+// Die Hand-Fläche liegt als Overlay über dem Tisch: sie gewinnt nur im unteren Teil, sonst zählt, was darunter liegt (z. B. Trash).
+const zoneAt = (x, y, allowed) => {
+  const els = document.elementsFromPoint ? document.elementsFromPoint(x, y) : [document.elementFromPoint(x, y)]
+  let hand = null
+  for (const el of els) {
+    for (let n = el; n && n.dataset; n = n.parentElement) {
+      const d = n.dataset.drop
+      if (!d || (allowed && !allowed.includes(d))) continue
+      if (d === 'hand') {
+        const r = n.getBoundingClientRect()
+        if (n.classList.contains('fan-drop') ? y > r.top + r.height * 0.45 : false) return 'hand'
+        hand = hand || 'hand'
+      } else return d
+    }
+  }
+  return hand
+}
 
 function Modal({ title, onClose, children }) {
   return (
@@ -84,6 +101,7 @@ function ArrowLayer({ players, mySeat, onRemove }) {
     for (const list of Object.values(pl.state?.zones || {})) {
       for (const inst of list) for (const t of inst.targets || []) arrows.push({ from: inst.id, to: t, seat: pl.seat })
     }
+    for (const fx of pl.state?.fx || []) for (const t of fx.targets || []) arrows.push({ from: fx.id, to: t, seat: pl.seat })
   }
   const key = arrows.map((a) => a.from + '>' + a.to).join('|')
   useEffect(() => {
@@ -261,7 +279,7 @@ function Setup({ mine, cards, onBattlefield, onChampion }) {
 }
 
 // Handkarten als Fächer. Jede Karte hat einen "Hide"-Schalter: verdeckt gespielte Karten sieht der Gegner nicht.
-export function HandFan({ hand, cards, cw, bind, drag, onHide }) {
+export function HandFan({ hand, cards, cw, bind, drag, onHide, onPlay }) {
   const [w, setW] = useState(window.innerWidth)
   useEffect(() => {
     const f = () => setW(window.innerWidth)
@@ -294,6 +312,10 @@ export function HandFan({ hand, cards, cw, bind, drag, onHide }) {
                     {inst.faceDown ? 'Hidden' : 'Hide'}
                   </button>
                 )} />
+              {hideable && (
+                <button className="playchip" title="Spielen: Ziel wählen, die Karte kommt auf den Stack" data-play={inst.id}
+                  onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onPlay(inst) }}>➚</button>
+              )}
             </div>
           )
         })}
@@ -321,7 +343,7 @@ export default function Session({ id, view, user }) {
   const [drag, setDrag] = useState(null)
   const dragRef = useRef(null)
   const ghostRef = useRef(null)
-  const [aim, setAim] = useState(null)            // Karte, für die gerade ein Zielpfeil gesetzt wird
+  const [aim, setAim] = useState(null)            // { id, mode } – Karte, für die gerade ein Ziel gewählt wird (arrow, play, fx)
   const [showing, setShowing] = useState(null)    // kurz gezeigte Karten eines Mitspielers
   const seenShown = useRef({})
   const [prefs, setPrefs] = useState(loadPrefs)
@@ -457,7 +479,8 @@ export default function Session({ id, view, user }) {
     setPreview({ seat, zone, id: inst.id, cardId: inst.cardId })
   }
   function startDrag(inst, zone, card, w, x, y) {
-    const allowed = targetsFor(card, zone, bfSeats, inst)
+    const hostIds = ['base', 'bfUnits'].flatMap((z) => (mineRef.current?.zones[z] || []).filter((i) => !i.att).map((i) => i.id))
+    const allowed = targetsFor(card, zone, bfSeats, inst, hostIds)
     if (!allowed.length) return false
     dragRef.current = { id: inst.id, allowed, over: null, w }
     setHover(null)
@@ -468,15 +491,16 @@ export default function Session({ id, view, user }) {
     const d = dragRef.current
     if (!d) return
     if (ghostRef.current) ghostRef.current.style.transform = `translate(${x - d.w / 2}px, ${y - d.w * 0.7}px)`
-    const over = zoneAt(x, y)
+    const over = zoneAt(x, y, d.allowed)
     if (over !== d.over) { d.over = over; setDrag((s) => s && { ...s, over }) }
   }
   function endDrag(x, y) {
     const d = dragRef.current
     dragRef.current = null
     setDrag(null)
-    const over = zoneAt(x, y)
+    const over = zoneAt(x, y, d?.allowed)
     if (!d || !over || !d.allowed.includes(over)) return
+    if (over.startsWith('card:')) { act((p) => attachCard(p, d.id, over.slice(5))); return }
     if (over === 'deck' || over === 'runeDeck') {
       // oben oder unten wird erst nach dem Loslassen gefragt
       const rune = over === 'runeDeck'
@@ -506,8 +530,16 @@ export default function Session({ id, view, user }) {
     if (canTap(card, zone)) items.push({ key: 'tap', label: inst.tapped ? 'Enttappen' : 'Tappen', run: () => act((p) => toggleFlag(p, iid, 'tapped')) })
     if (canHide(card, zone)) items.push({ key: 'hide', label: inst.faceDown ? 'Nicht mehr verdeckt spielen' : 'Verdeckt spielen', run: () => act((p) => toggleFlag(p, iid, 'faceDown')) })
     if (canMark(card, zone)) items.push({ key: 'marks', label: 'Zähler & Status', run: () => openPreview(mySeat, zone, inst) })
+    if (inst.att) {
+      items.push({ key: 'detach', label: 'Von der Karte lösen', run: () => act((p) => detachCard(p, iid)) })
+      items.push({ key: 'peekup', label: 'Mehr davon sichtbar', run: () => act((p) => changePeek(p, iid, 0.04)) })
+      items.push({ key: 'peekdown', label: 'Weniger davon sichtbar', run: () => act((p) => changePeek(p, iid, -0.04)) })
+    }
+    if (['base', 'bfUnits', 'champion', 'legend'].includes(zone)) {
+      items.push({ key: 'fx', label: 'Effekt auf den Stack…', run: () => { setPreview(null); setHover(null); setAim({ id: iid, mode: 'fx' }) } })
+    }
     if (canAim(zone)) {
-      items.push({ key: 'aim', label: '➚ Ziel wählen (Pfeil)', run: () => { setPreview(null); setHover(null); setAim(iid) } })
+      items.push({ key: 'aim', label: '➚ Pfeil ohne Stack', run: () => { setPreview(null); setHover(null); setAim({ id: iid, mode: 'arrow' }) } })
       if (inst.targets?.length) items.push({ key: 'unaim', label: 'Pfeile entfernen', run: () => act((p) => clearTargets(p, iid)) })
     }
     if (canGive(card, zone)) {
@@ -518,16 +550,26 @@ export default function Session({ id, view, user }) {
     return items
   }
   function pickTarget(targetId) {
-    const from = aim
+    const cur = aim
     setAim(null)
-    if (from && from !== targetId) act((p) => toggleTarget(p, from, targetId))
+    if (!cur || cur.id === targetId) return
+    if (cur.mode === 'arrow') act((p) => toggleTarget(p, cur.id, targetId))
+    else if (cur.mode === 'play') act((p) => playToStack(p, cur.id, targetId, cards))
+    else act((p) => addFx(p, cur.id, targetId))
+  }
+  function noTarget() {
+    const cur = aim
+    setAim(null)
+    if (!cur) return
+    if (cur.mode === 'play') act((p) => playToStack(p, cur.id, null, cards))
+    else if (cur.mode === 'fx') act((p) => addFx(p, cur.id, null))
   }
 
   function bindCard(seat, zone, inst, opts = {}) {
     const card = cards[inst.cardId]
     const own = seat === mySeat
     if (aim) {
-      if (zone === 'hand') return {}
+      if (zone === 'hand' || zone === 'runes') return {}
       return { onClick: () => pickTarget(inst.id), onContextMenu: (e) => e.preventDefault() }
     }
     if (!own) return { onClick: () => { if (!inst.faceDown) openPreview(seat, zone, inst) } }
@@ -683,9 +725,11 @@ export default function Session({ id, view, user }) {
   const pw = sessionStorage.getItem('pw:' + id)
   const joinUrl = `${location.origin}${location.pathname}#/join/${row.code}`
   const ctx = {
-    cards, settings, mySeat, players, bindCard, bindPile, onZone, drag, aim,
-    onApprove: (b, sig, on) => act((p) => setApproval(p, b, sig, on)),
-    onResolve: (iid, b) => act((p) => resolveStackCard(p, iid, b, cards)),
+    cards, settings, mySeat, players, bindCard, bindPile, onZone, drag, aim: aim?.id || null, pickTarget,
+    onApprove: (sig, on) => act((p) => setApproval(p, sig, on)),
+    onResolve: (entry) => act((p) => resolveEntry(p, entry)),
+    onRemoveFx: (fxId) => act((p) => resolveEntry(p, { fx: { id: fxId } })),
+    previewCard: (cardId) => { setHover(null); setPreview({ seat: null, zone: 'stack', id: 'x', cardId }) },
   }
   const mineShow = Object.fromEntries(VIEW_ZONES.map(([k]) => [k, prefs.mine?.[k] ?? true]))
   const oppShow = Object.fromEntries(VIEW_ZONES.map(([k]) => [k, prefs.opp?.[k] ?? false]))
@@ -725,7 +769,7 @@ export default function Session({ id, view, user }) {
             <div className="pv-bar">
               {actions.map((a) => (
                 <button key={a.key + a.label} className={a.key === 'reveal' ? 'primary' : ''}
-                  onClick={() => { a.run(); if (a.key === 'aim' || a.key === 'give') setPreview(null) }}>{a.label}</button>
+                  onClick={() => { a.run(); if (['aim', 'give', 'fx'].includes(a.key)) setPreview(null) }}>{a.label}</button>
               ))}
               {canMark(card, zone) && <CounterPanel inst={info.inst} {...markFns(preview.id)} />}
             </div>
@@ -764,7 +808,7 @@ export default function Session({ id, view, user }) {
         <Floating rect={hover.rect} onEnter={keepHover} onLeave={hideHover}>
           {canMark(hoverCard, hoverInfo.zone) && <CounterPanel inst={hoverInfo.inst} {...markFns(hover.id)} />}
           <div className="hover-actions">
-            {actionsFor(hover.id).filter((a) => ['aim', 'unaim', 'give'].includes(a.key)).map((a) => (
+            {actionsFor(hover.id).filter((a) => ['aim', 'unaim', 'give', 'fx', 'detach', 'peekup', 'peekdown'].includes(a.key)).map((a) => (
               <button key={a.key + a.label} onClick={() => { setHover(null); a.run() }}>{a.label}</button>
             ))}
           </div>
@@ -773,7 +817,8 @@ export default function Session({ id, view, user }) {
       <ArrowLayer players={players} mySeat={mySeat} onRemove={(from, to) => act((p) => removeTarget(p, from, to))} />
       {aim && (
         <div className="aimbar">
-          <span>Ziel wählen: tippe oder klicke die Karte, auf die der Pfeil zeigen soll.</span>
+          <span>{aim.mode === 'arrow' ? 'Ziel wählen: tippe oder klicke die Karte, auf die der Pfeil zeigen soll.' : 'Ziel wählen: tippe oder klicke die Karte im Spiel, auf die die Karte zielt. Sie wird aufgedeckt und kommt auf den Stack.'}</span>
+          {aim.mode !== 'arrow' && <button className="primary" onClick={noTarget}>Ohne Ziel</button>}
           <button onClick={() => setAim(null)}>Abbrechen</button>
         </div>
       )}
@@ -891,7 +936,8 @@ export default function Session({ id, view, user }) {
             {tab === 'play' && (
               <HandFan hand={mine.zones.hand} cards={cards} cw={fanCw} drag={drag}
                 bind={(inst) => bindCard(mySeat, 'hand', inst)}
-                onHide={(inst) => act((p) => toggleFlag(p, inst.id, 'faceDown'))} />
+                onHide={(inst) => act((p) => toggleFlag(p, inst.id, 'faceDown'))}
+                onPlay={(inst) => setAim({ id: inst.id, mode: 'play' })} />
             )}
           </>
          )}

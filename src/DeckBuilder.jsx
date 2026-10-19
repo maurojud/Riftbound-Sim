@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabase'
-import { KINDS, COLORS, DECK_RULES, analyzeDeck, canAdd, colorsOf, parseDeckList, formatDeckList } from './game'
+import { KINDS, COLORS, DECK_RULES, analyzeDeck, canAdd, colorsOf, legendColors, fitsLegend, parseDeckList, formatDeckList } from './game'
 import CardImg from './CardImg'
 
 export const COLOR_HEX = { Fury: '#e5584a', Calm: '#4fb98a', Mind: '#4f94e8', Body: '#f0953a', Chaos: '#a463e0', Order: '#e8c547' }
@@ -30,6 +30,10 @@ export default function DeckBuilder() {
 
   const byId = useMemo(() => Object.fromEntries(cards.map((c) => [c.id, c])), [cards])
   const a = useMemo(() => analyzeDeck(qty, byId), [qty, byId])
+  // Die gewählte Legend begrenzt die Farben: der Farbfilter schaltet sich automatisch auf ihre Farben, andere Farben lassen sich nicht hinzufügen
+  const allowed = useMemo(() => legendColors(qty, byId), [qty, byId])
+  const allowedKey = allowed.join(',')
+  useEffect(() => { setColors(allowed) }, [allowedKey]) // eslint-disable-line
   // Farbfilter trifft beide Farben einer Karte (zweifarbige Legends und Signature-Karten erscheinen bei beiden Farben)
   // Filter: nichts gewählt = alles; sonst genügt es, wenn die Karte mindestens eine der gewählten Farben bzw. Arten hat.
   const shown = cards.filter(
@@ -113,6 +117,7 @@ export default function DeckBuilder() {
         </div>
         <hr />
         <input value={name} onChange={(e) => setName(e.target.value)} />
+        {allowed.length > 0 && <p className="small"><span className="muted">Legend-Farben:</span> {allowed.map((c) => <span key={c} className="chip gold" style={{ background: COLOR_HEX[c], color: '#10151c', marginRight: 4 }}>{c}</span>)}</p>}
         <ul className="rules">
           {check(a.main === R.main, `Deck ${a.main} von ${R.main}`)}
           {check(a.legend === R.legend, `Legend ${a.legend} von ${R.legend}`)}
@@ -181,7 +186,8 @@ export default function DeckBuilder() {
               <h3 className="grouptitle">{title}</h3>
               <div className="pick-grid">
                 {list.map((c) => (
-                  <div key={c.id} className={'pick' + (qty[c.id] ? ' has' : '')}>
+                  <div key={c.id} className={'pick' + (qty[c.id] ? ' has' : '') + (c.kind !== 'Legend' && !fitsLegend(c, allowed) ? ' blocked' : '')}
+                       title={c.kind !== 'Legend' && !fitsLegend(c, allowed) ? `Passt nicht zur Legend (${allowed.join(' / ')})` : undefined}>
                     <CardImg src={c.image_url} alt={c.name} loading="lazy" battlefield={c.kind === 'Battlefield'} onClick={() => add(c)} />
                     <div className="pickbar">
                       <button onClick={() => remove1(c.id)}>−</button>

@@ -457,3 +457,70 @@ fieldset { border-color: #2c3a4d; border-radius: 16px; }
 .fan { background: linear-gradient(to top, #0a0e14f2 30%, #0a0e1400); }
 .fan-card { bottom: calc(var(--cw) * -.3); }
 .fan-card:hover .card { transform: translateY(-64px) scale(1.08); }
+
+/* ───────── v7: Spielmatte als Raster, gleich große Zonen, gemeinsamer Stack rechts, Equipment ───────── */
+.mat { --fw: calc(var(--cw) * var(--xs, .66) + 20px); display: grid; gap: 6px 8px; align-items: stretch;
+  grid-template-columns: var(--fw) var(--fw) minmax(0, 1fr) var(--fw) var(--fw) var(--fw); }
+.mat.bottom { grid-template-areas: "base base base . legend champ" "rdeck hand runes deck trash banish"; }
+.mat.top { grid-template-areas: "rdeck hand runes deck trash banish" "base base base . legend champ"; }
+.mat > .zonebox { min-width: 0; }
+.mat .zonebox.fixed { width: auto; flex: none; }
+.mat .basebox .zc { min-height: calc(var(--cw) * 1.4); }
+.mat .runes .zc, .mat .zonebox.fixed .zc { min-height: calc(var(--cw) * var(--xs, .66) * 1.4 + 2px); }
+.mat .zonebox.fixed .zc { justify-content: center; align-content: center; }
+.zonebox.pile { cursor: pointer; text-align: center; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: manipulation; padding: 4px 6px 6px; }
+.zonebox.pile.off { cursor: default; }
+.zonebox.pile:not(.off):hover { background: #ffffff14; }
+.zonebox.pile .zt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zonebox.pile .pile-face { width: calc(var(--cw) * var(--xs, .66)); height: calc(var(--cw) * var(--xs, .66) * 1.4); aspect-ratio: auto; flex: none; }
+.zonebox.pile .pile-face.empty { border: 2px dashed #3a4a60; border-radius: 10px; opacity: .7; }
+.zonebox.pile .pile-face img, .zonebox.pile .pile-face .back { width: 100%; height: 100%; border-radius: 9px; object-fit: cover; display: block; }
+.mine-board { --xs: .8; }
+@media (max-width: 700px) { .mine-board { --cw: 56px; --xs: .78; } .bfrow { --cw: 54px; } }
+@media (min-width: 1500px) { .tv .zonebox.pile .pile-face { width: calc(var(--cw) * var(--xs, .66)); } }
+
+/* Equipment: angehängte Karten schauen unten unter der Hauptkarte hervor */
+.cgroup { position: relative; flex: none; width: var(--gw); height: calc(var(--gw) * 1.4 * (1 + var(--pk))); }
+.cg-host { position: relative; }
+.cg-kid { position: absolute; left: 0; top: calc(var(--gw) * 1.4 * var(--off)); }
+.cgroup.tapped { transform: rotate(90deg); margin: 0 calc((var(--gw) * 1.4 * (1 + var(--pk)) - var(--gw)) / 2); }
+.cgroup .card { margin: 0; }
+
+/* Gemeinsamer Stack ganz rechts */
+.withstack { display: flex; gap: 10px; align-items: flex-start; }
+.withstack > .myboard, .withstack > .tvtable { flex: 1; min-width: 0; }
+.tvwrap, .tvtable { --cw: clamp(44px, min(calc((100vh - 84px) / 11.1), 5.2vw), 120px); --xs: .62; }
+.tvwrap { padding: 8px 12px 12px 12px; align-items: stretch; }
+.tvwrap > .tvtable { padding: 0; min-height: calc(100vh - 74px); }
+.stackcol { flex: none; width: calc(var(--cw) * .75 + 30px); position: sticky; top: 64px; display: flex; flex-direction: column; gap: 6px;
+  max-height: calc(100vh - 80px); padding: 8px 8px 10px; border-radius: 18px; background: #0a0e1480; border: 1px dashed #e3b04b66; }
+.tvwrap > .stackcol { align-self: stretch; top: 8px; max-height: none; }
+.stackcol .zt { color: var(--gold); margin: 0; text-align: center; }
+.stackcol .stack-list { flex-direction: column; flex-wrap: nowrap; align-items: center; justify-content: flex-start; gap: 8px; flex: 1; overflow-y: auto; min-height: 120px; padding: 6px 0; }
+.stackcol .card.xs { --w: calc(var(--cw) * .75); }
+.stackcol .stack-ctl { flex-direction: column; align-items: stretch; min-height: 0; }
+.stackcol .stack-ctl .oks { justify-content: center; }
+.stackcol .stack-ctl button { width: 100%; }
+.stackcol .stack-empty { text-align: center; font-size: .75rem; }
+.st-item { position: relative; display: flex; justify-content: center; }
+.fxbadge { position: absolute; bottom: 3px; left: 3px; z-index: 3; background: var(--gold); color: #1b1608; font-size: .6rem; font-weight: 800; border-radius: 999px; padding: 0 6px; }
+.xbtn { position: absolute; top: -6px; right: -4px; z-index: 4; min-height: 0; width: 22px; height: 22px; padding: 0; line-height: 1; border-radius: 50%; background: #0a0e14; }
+@media (max-width: 700px) { .stackcol { width: calc(var(--cw) * .75 + 18px); padding: 6px 4px; } }
+
+.fan-card .playchip { position: absolute; top: 3px; right: 3px; z-index: 4; min-height: 0; padding: 0 8px; font-size: .9rem; line-height: 1.5; border-radius: 999px; background: var(--gold); color: #1b1608; border-color: var(--gold); font-weight: 800; }
+.fan-card:hover .playchip { transform: translateY(-64px) scale(1.08); }
+.pick.blocked { opacity: .35; }
+.pick.blocked img { filter: grayscale(.8); }
+
+/* Karten-Editor */
+.thumb { width: 46px; border-radius: 6px; cursor: zoom-in; display: block; }
+.nums { display: flex; gap: 6px; } .nums input { width: 64px; min-width: 0; padding: 4px 8px; min-height: 34px; }
+.nums label { display: flex; flex-direction: column; gap: 2px; }
+.filterbar select { min-width: 150px; } .selbar { margin: 8px 0 2px; gap: 12px; }
+.admin-card { position: relative; border: 2px solid transparent; border-radius: 14px; padding: 4px; }
+.admin-card.picked { border-color: var(--gold); background: #e3b04b0f; }
+.selbox { position: absolute; top: 8px; left: 8px; z-index: 3; background: #0a0e14cc; border-radius: 8px; padding: 2px 4px; }
+.selbox input { width: 20px; height: 20px; min-height: 0; margin: 0; }
+.imgbtn { cursor: zoom-in; }
+.imgbtn img { width: 100%; }
+.admin-card .nums input { width: 100%; }

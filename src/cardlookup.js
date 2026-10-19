@@ -1,6 +1,13 @@
 import { KINDS, COLORS, allowsSecondColor } from './game'
 
 // Erkennt Dateinamen wie SFD-042.webp, ogn_011_298.png oder "OGN 011": Set-Kürzel + Kartennummer.
+// Findet in einem Text wie "OGN-023*", "ogn 023S" oder "Name OGN-023a" den Code. Zeichen dahinter werden ignoriert.
+export function extractCode(text, strict = false) {
+  const re = strict ? /(?:^|[^A-Za-z])([A-Za-z]{2,4})-0*(\d{1,3})/ : /(?:^|[^A-Za-z])([A-Za-z]{2,4})[-_\s]?0*(\d{1,3})/
+  const m = String(text || '').match(re)
+  return m ? { set: m[1].toLowerCase(), num: m[2].padStart(3, '0') } : null
+}
+
 export function parseSetNumber(filename) {
   const base = filename.replace(/\.[^.]+$/, '')
   const m = base.match(/^([a-z]{2,4})[\s_-]*0*(\d{1,3})(?:[\s_-]|$)/i)
@@ -25,6 +32,8 @@ export async function fetchCardInfo(set, num) {
   cache.set(key, card)
   return card
 }
+
+const numOrNull = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v))
 
 const normKind = (s) => {
   const t = String(s || '').toLowerCase()
@@ -52,6 +61,11 @@ export function mapApiCard(c) {
     color2: twoOk ? domains[1] || null : null,
     domains,
     ignoredDomain: !twoOk && domains.length > 1 ? domains[1] : null, // zweite Farbe, die wir nicht übernehmen
+    energy: numOrNull(c.attributes?.energy ?? c.energy),
+    might: numOrNull(c.attributes?.might ?? c.might),
+    power: numOrNull(c.attributes?.power ?? c.power),
+    // Power-Farben: Farben der Domains, sobald die Karte Power kostet
+    powerColors: (numOrNull(c.attributes?.power ?? c.power) || 0) > 0 ? domains.join(',') : '',
     code: (c.riftbound_id || '').split('-').slice(0, 2).join('-').toUpperCase() || null,
   }
 }

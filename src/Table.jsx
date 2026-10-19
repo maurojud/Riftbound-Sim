@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import { kindOf, COUNTERS, STATUSES, stackFor, stackSig, approvedBy } from './game'
+import { kindOf, COUNTERS, STATUSES, stackEntries, stackSig, approvedBy } from './game'
 import CardImg from './CardImg'
 
 // Alles, was die Tisch-Bausteine von der Session brauchen (Karten, Regeln, Spieler, Drag-Zustand, Klick-Handler)
@@ -27,15 +27,16 @@ function Marks({ inst }) {
   return <div className="marks">{chips.map(([k, t]) => <span key={k} className={'mk ' + k}>{t}</span>)}</div>
 }
 
-export function CardView({ card, inst, reveal = true, small, xs, onClick, handlers, dim, owner, extra, aimFrom }) {
+export function CardView({ card, inst, reveal = true, small, xs, onClick, handlers, dim, owner, extra, aimFrom, iid, drop }) {
+  const g = useContext(GameCtx)
   const hidden = !card || (inst?.faceDown && !reveal)
   const land = kindOf(card) === 'battlefield' && !hidden
   const h = { ...(handlers || {}) }
   if (onClick) h.onClick = onClick
   const cls = ['card', inst?.tapped && 'tapped', small && 'small', xs && 'xs', land && 'land', dim && 'dim', owner && 'owned', aimFrom && 'aimfrom',
-    (h.onClick || h.onPointerDown) && 'clickable', h.onPointerDown && 'draggable'].filter(Boolean).join(' ')
+    (h.onClick || h.onPointerDown) && 'clickable', h.onPointerDown && 'draggable', g && dropCls(g, drop).trim()].filter(Boolean).join(' ')
   return (
-    <div className={cls} style={owner ? { '--oc': seatColor(owner) } : undefined} data-iid={inst?.id} {...h} title={card?.name}>
+    <div className={cls} style={owner ? { '--oc': seatColor(owner) } : undefined} data-iid={iid || inst?.id} data-drop={drop} {...h} title={card?.name}>
       {hidden ? <div className="back" /> : <CardImg src={card.image_url} alt={card.name} battlefield={land} />}
       {inst?.faceDown && reveal && <span className="badge">verdeckt</span>}
       {!hidden && inst && <Marks inst={inst} />}
@@ -70,36 +71,62 @@ export function CounterPanel({ inst, onCounter, onStatus, onClear }) {
   )
 }
 
-function ZoneBox({ title, count, children, className = '', drop }) {
+function ZoneBox({ title, count, children, className = '', drop, area }) {
   const g = useG()
   return (
-    <div className={`zonebox ${className}${dropCls(g, drop)}`} data-drop={drop}>
+    <div className={`zonebox ${className}${dropCls(g, drop)}`} data-drop={drop} style={area ? { gridArea: area } : undefined}>
       <div className="zt">{title}{count != null && <span className="muted"> · {count}</span>}</div>
       <div className="zc">{children}</div>
     </div>
   )
 }
 
-// Stapel mit fester Größe. handlers: Klick (ziehen/öffnen) und Menü (Rechtsklick oder langes Drücken) kommen aus der Session.
-function Pile({ label, count, topCard, hideTop, off, drop, handlers, tip }) {
+// Stapel-Zone (Deck, Runendeck, Hand, Trash, Banish) – gleich groß wie Legend und Champion, egal ob Karten darin liegen.
+// handlers: Klick (ziehen/öffnen) und Menü (Rechtsklick oder langes Drücken) kommen aus der Session.
+function PileBox({ area, title, count, topCard, hideTop, off, drop, handlers, tip }) {
   const g = useG()
   return (
-    <button className={'pile' + (off ? ' off' : '') + dropCls(g, drop)} data-drop={drop} aria-disabled={off || undefined} title={tip} {...(off ? {} : handlers)}>
-      <div className={'pile-face' + (count ? '' : ' empty')}>
-        {count > 0 && (topCard && !hideTop ? <img src={topCard.image_url} alt="" draggable={false} /> : <div className="back" />)}
+    <div className={'zonebox fixed pile' + (off ? ' off' : '') + dropCls(g, drop)} data-drop={drop} style={{ gridArea: area }} title={tip}
+      role={off ? undefined : 'button'} tabIndex={off ? undefined : 0} {...(off ? {} : handlers)}>
+      <div className="zt">{title}{count != null ? <span className="muted"> · {count}</span> : null}</div>
+      <div className="zc">
+        <div className={'pile-face' + (count ? '' : ' empty')}>
+          {count > 0 && (topCard && !hideTop ? <img src={topCard.image_url} alt="" draggable={false} /> : <div className="back" />)}
+        </div>
       </div>
-      <span>{label}{count != null ? ` ${count}` : ''}</span>
-    </button>
+    </div>
   )
 }
 
-function Cards({ seat, zone, list, xs }) {
+// Liste von Karten einer Zone. Angehängte Karten (Equipment) werden mit ihrer Hauptkarte gruppiert: nur der untere Teil bleibt sichtbar.
+export function CardList({ seat, zone, list, xs, outline }) {
   const g = useG()
   const own = seat === g.mySeat
-  return list.map((inst) => (
-    <CardView key={inst.id} card={g.cards[inst.cardId]} inst={inst} reveal={own} xs={xs}
-      handlers={g.bindCard(seat, zone, inst)} dim={g.drag?.id === inst.id} aimFrom={g.aim === inst.id} />
-  ))
+  const ids = new Set(list.map((i) => i.id))
+  const hostable = own && (zone === 'base' || zone === 'bfUnits')
+  const one = (inst, extraProps = {}) => (
+    <CardView key={inst.id} card={g.cards[inst.cardId]} inst={inst} reveal={own} xs={xs} owner={outline ? seat : undefined}
+      handlers={g.bindCard(seat, zone, inst)} dim={g.drag?.id === inst.id} aimFrom={g.aim === inst.id} {...extraProps} />
+  )
+  return list.filter((i) => !i.att || !ids.has(i.att)).map((host) => {
+    const kids = list.filter((i) => i.att === host.id)
+    const drop = hostable ? `card:${host.id}` : undefined
+    if (!kids.length) return one(host, { drop })
+    let cum = 0
+    const stops = kids.map((k) => { cum += k.peek || 0.22; return cum })
+    const total = cum
+    return (
+      <div key={host.id} className={'cgroup' + (host.tapped ? ' tapped' : '')}
+        style={{ '--gw': xs ? 'calc(var(--cw) * var(--xs, .66))' : 'var(--cw)', '--pk': total }}>
+        {kids.map((k, i) => (
+          <div key={k.id} className="cg-kid" style={{ '--off': stops[i], zIndex: 10 - i }}>
+            {one({ ...k, tapped: false })}
+          </div>
+        ))}
+        <div className="cg-host" style={{ zIndex: 20 }}>{one({ ...host, tapped: false }, { drop })}</div>
+      </div>
+    )
+  })
 }
 
 const Empty = ({ children }) => <span className="muted small">{children}</span>
@@ -115,63 +142,65 @@ export function Tag({ player }) {
   )
 }
 
-// Stack eines Battlefields: oben liegt, was zuerst aufgelöst wird. Alle Spieler bestätigen mit OK, dann löst der Besitzer der obersten Karte auf.
-function StackBox({ owner, stack, sig }) {
+// Gemeinsamer Stack ganz rechts: oben liegt, was zuerst aufgelöst wird. Alle Spieler bestätigen mit OK, dann löst der Besitzer der obersten Karte auf.
+export function StackCol() {
   const g = useG()
+  const entries = stackEntries(g.players)
+  const sig = stackSig(entries)
   const everyone = g.players.filter((p) => p.state)
-  const approved = everyone.map((p) => ({ p, ok: approvedBy(p, owner.seat, sig) }))
-  const allOk = stack.length > 0 && approved.every((a) => a.ok)
-  const top = stack[stack.length - 1]
+  const approved = everyone.map((p) => ({ p, ok: approvedBy(p, sig) }))
+  const allOk = entries.length > 0 && approved.every((a) => a.ok)
+  const top = entries[entries.length - 1]
   const iOk = approved.some((a) => a.p.seat === g.mySeat && a.ok)
+  const drop = g.mySeat != null ? 'stack' : undefined
   return (
-    <div className={'stackbox' + dropCls(g, g.mySeat != null ? `stack:${owner.seat}` : null)} data-drop={g.mySeat != null ? `stack:${owner.seat}` : undefined}>
-      <div className="stack-head">
-        <div className="zt">Stack{stack.length ? ` · ${stack.length}` : ''}</div>
+    <aside className={'stackcol' + dropCls(g, drop)} data-drop={drop}>
+      <div className="zt">Stack{entries.length ? ` · ${entries.length}` : ''}</div>
+      <div className="stack-list">
+        {entries.length === 0 && <span className="muted small stack-empty">Leer. Spells hierher ziehen oder mit ➚ spielen.</span>}
+        {[...entries].reverse().map((e, i) => (
+          <div key={e.key} className="st-item">
+            <CardView xs card={g.cards[e.cardId]} owner={e.seat} iid={e.key}
+              inst={e.inst || { id: e.key, cardId: e.cardId }}
+              handlers={e.inst ? g.bindCard(e.seat, 'stack', e.inst) : { onClick: () => (g.aim ? g.pickTarget(e.key) : g.previewCard(e.cardId)) }}
+              dim={g.drag?.id === e.key} aimFrom={g.aim === e.key}
+              extra={<>
+                {i === 0 && entries.length > 1 && <span className="topbadge">oben</span>}
+                {e.fx && <span className="fxbadge">Effekt</span>}
+              </>} />
+            {e.fx && e.seat === g.mySeat && <button className="xbtn" title="Eintrag entfernen" onClick={() => g.onRemoveFx(e.fx.id)}>×</button>}
+          </div>
+        ))}
+      </div>
       <div className="stack-ctl">
-        {stack.length > 0 && (<>
+        {entries.length > 0 && (<>
           <span className="oks">
             {approved.map(({ p, ok }) => (
               <span key={p.seat} className={'okdot' + (ok ? ' on' : '')} style={{ '--oc': seatColor(p.seat) }} title={`${p.name}: ${ok ? 'OK' : 'wartet'}`} />
             ))}
           </span>
-          {g.mySeat != null && (
-            <button className={iOk ? 'primary' : ''} onClick={() => g.onApprove(owner.seat, sig, !iOk)}>{iOk ? 'OK ✓' : 'OK'}</button>
-          )}
-          {allOk && top.seat === g.mySeat && <button className="primary" onClick={() => g.onResolve(top.inst.id, owner.seat)}>Auflösen</button>}
+          {g.mySeat != null && <button className={iOk ? 'primary' : ''} onClick={() => g.onApprove(sig, !iOk)}>{iOk ? 'OK ✓' : 'OK'}</button>}
+          {allOk && top.seat === g.mySeat && <button className="primary" onClick={() => g.onResolve(top)}>Auflösen</button>}
           {allOk && top.seat !== g.mySeat && <span className="muted small">{g.players.find((p) => p.seat === top.seat)?.name} löst auf</span>}
         </>)}
       </div>
-      </div>
-      <div className="stack-list">
-        {stack.length === 0 && <span className="muted small stack-empty">Karte hierher ziehen</span>}
-        {[...stack].reverse().map((e, i) => (
-          <CardView key={e.inst.id} xs card={g.cards[e.inst.cardId]} inst={e.inst} owner={e.seat}
-            handlers={g.bindCard(e.seat, 'stack', e.inst)} dim={g.drag?.id === e.inst.id} aimFrom={g.aim === e.inst.id}
-            extra={i === 0 && stack.length > 1 ? <span className="topbadge">oben</span> : null} />
-        ))}
-      </div>
-    </div>
+    </aside>
   )
 }
 
 // Ein Battlefield-Feld: oben und unten je eine Einheiten-Zone (die Karten eines Spielers liegen in der Zone auf seiner Seite),
-// in der Mitte die Battlefield-Karte (immer quer) und der Stack.
+// in der Mitte die Battlefield-Karte (immer quer).
 export function BfZone({ owner, topSeats }) {
   const g = useG()
   const bf = owner.state?.zones.battlefield[0]
-  const stack = stackFor(g.players, owner.seat)
-  const sig = stackSig(stack)
   const droppable = g.mySeat != null && !!bf
   const strip = (top) => {
     const seats = g.players.filter((p) => topSeats.has(p.seat) === top)
-    const units = seats.flatMap((p) => (p.state?.zones.bfUnits || []).filter((i) => i.at === owner.seat).map((inst) => ({ inst, seat: p.seat })))
+    const parts = seats.map((p) => ({ seat: p.seat, list: (p.state?.zones.bfUnits || []).filter((i) => i.at === owner.seat) })).filter((x) => x.list.length)
     return (
       <div className={'bfstrip ' + (top ? 'top' : 'bottom')}>
-        {units.map(({ inst, seat }) => (
-          <CardView key={inst.id} xs card={g.cards[inst.cardId]} inst={inst} reveal={seat === g.mySeat} owner={seat}
-            handlers={g.bindCard(seat, 'bfUnits', inst)} dim={g.drag?.id === inst.id} aimFrom={g.aim === inst.id} />
-        ))}
-        {!units.length && <span className="strip-l">{seats.map((p) => p.name).join(' · ')}</span>}
+        {parts.map((x) => <CardList key={x.seat} seat={x.seat} zone="bfUnits" list={x.list} xs outline />)}
+        {!parts.length && <span className="strip-l">{seats.map((p) => p.name).join(' · ')}</span>}
       </div>
     )
   }
@@ -185,27 +214,16 @@ export function BfZone({ owner, topSeats }) {
             ? <CardView card={g.cards[bf.cardId]} inst={bf} handlers={g.bindCard(owner.seat, 'battlefield', bf)} aimFrom={g.aim === bf.id} />
             : <Empty>{owner.state ? 'wählt noch…' : 'noch kein Deck'}</Empty>}
         </div>
-        <StackBox owner={owner} stack={stack} sig={sig} />
       </div>
       {strip(false)}
     </div>
   )
 }
 
-export function BaseRow({ player }) {
-  const g = useG()
-  const { seat, state } = player
-  return (
-    <div className="arow baserow">
-      <ZoneBox title="Base" className="grow" drop={seat === g.mySeat ? 'base' : undefined}>
-        {state?.zones.base.length ? <Cards seat={seat} zone="base" list={state.zones.base} /> : <Empty>leer</Empty>}
-      </ZoneBox>
-    </div>
-  )
-}
-
+// Spielmatte eines Spielers als Raster. Unten: Base (breit), Legend, Champion; darunter Runendeck, Hand, Runen, Deck, Trash, Banish.
+// Trash liegt unter der Legend, Banish unter dem Champion. variant "top" spiegelt die Reihenfolge (Base zur Tischmitte).
 // show: welche Zonen angezeigt werden (Standard: alle)
-export function OuterRow({ player, show }) {
+export function Mat({ player, show, variant = 'bottom' }) {
   const g = useG()
   const { seat, state } = player
   if (!state) return null
@@ -214,36 +232,38 @@ export function OuterRow({ player, show }) {
   const on = (k) => !show || show[k] !== false
   const ready = z.runes.filter((r) => !r.tapped).length
   const top = (arr) => (arr.length ? g.cards[arr[arr.length - 1].cardId] : null)
-  const piles = ['deck', 'runeDeck', 'hand', 'trash', 'banish'].filter(on)
   return (
-    <div className="arow outer">
-      {on('runes') && (
-        <ZoneBox title="Runen" count={`${ready}/${z.runes.length} bereit`} className="grow runes">
-          {z.runes.length ? <Cards seat={seat} zone="runes" list={z.runes} xs /> : <Empty>keine gezogen</Empty>}
+    <div className={'mat ' + variant}>
+      {on('base') && (
+        <ZoneBox title="Base" area="base" className="basebox" drop={isMe ? 'base' : undefined}>
+          {z.base.length ? <CardList seat={seat} zone="base" list={z.base} /> : <Empty>leer</Empty>}
         </ZoneBox>
       )}
-      {on('legend') && <ZoneBox title="Legend" className="fixed"><Cards seat={seat} zone="legend" list={z.legend} xs /></ZoneBox>}
+      {on('legend') && <ZoneBox title="Legend" area="legend" className="fixed"><CardList seat={seat} zone="legend" list={z.legend} xs /></ZoneBox>}
       {on('champion') && (
-        <ZoneBox title="Champion" className="fixed" drop={isMe ? 'champion' : undefined}>
-          {z.champion.length ? <Cards seat={seat} zone="champion" list={z.champion} xs /> : <Empty>leer</Empty>}
+        <ZoneBox title="Champion" area="champ" className="fixed" drop={isMe ? 'champion' : undefined}>
+          {z.champion.length ? <CardList seat={seat} zone="champion" list={z.champion} xs /> : <Empty>leer</Empty>}
         </ZoneBox>
       )}
-      {piles.length > 0 && (
-        <div className="piles">
-          {on('deck') && <Pile label="Deck" count={z.deck.length} hideTop off={!isMe} tip="Klick: Karte ziehen · Rechtsklick oder lange drücken: Menü" drop={isMe ? 'deck' : undefined} handlers={g.bindPile(seat, 'deck')} />}
-          {on('runeDeck') && <Pile label="Runen-D." count={z.runeDeck.length} hideTop off={!isMe} tip="Klick: Rune ziehen · Rechtsklick oder lange drücken: Menü" drop={isMe ? 'runeDeck' : undefined} handlers={g.bindPile(seat, 'runeDeck')} />}
-          {on('hand') && <Pile label="Hand" count={isMe || g.settings.handCount ? z.hand.length : null} hideTop off drop={isMe ? 'hand' : undefined} />}
-          {on('trash') && <Pile label="Trash" count={z.trash.length} topCard={top(z.trash)} hideTop={!isMe && !g.settings.trashTop}
-            drop={isMe ? 'trash' : undefined} handlers={g.bindPile(seat, 'trash')} />}
-          {on('banish') && <Pile label="Banish" count={z.banish.length} topCard={top(z.banish)} drop={isMe ? 'banish' : undefined}
-            handlers={g.bindPile(seat, 'banish')} />}
-        </div>
+      {on('runeDeck') && <PileBox area="rdeck" title="Runendeck" count={z.runeDeck.length} hideTop off={!isMe} drop={isMe ? 'runeDeck' : undefined}
+        handlers={g.bindPile(seat, 'runeDeck')} tip="Klick: Rune ziehen · Rechtsklick oder lange drücken: Menü" />}
+      {on('hand') && <PileBox area="hand" title="Hand" count={isMe || g.settings.handCount ? z.hand.length : null} hideTop off drop={isMe ? 'hand' : undefined} />}
+      {on('runes') && (
+        <ZoneBox title="Runen" count={`${ready}/${z.runes.length} bereit`} area="runes" className="runes">
+          {z.runes.length ? <CardList seat={seat} zone="runes" list={z.runes} xs /> : <Empty>keine gezogen</Empty>}
+        </ZoneBox>
       )}
+      {on('deck') && <PileBox area="deck" title="Deck" count={z.deck.length} hideTop off={!isMe} drop={isMe ? 'deck' : undefined}
+        handlers={g.bindPile(seat, 'deck')} tip="Klick: Karte ziehen · Rechtsklick oder lange drücken: Menü" />}
+      {on('trash') && <PileBox area="trash" title="Trash" count={z.trash.length} topCard={top(z.trash)} hideTop={!isMe && !g.settings.trashTop}
+        drop={isMe ? 'trash' : undefined} handlers={g.bindPile(seat, 'trash')} />}
+      {on('banish') && <PileBox area="banish" title="Banish" count={z.banish.length} topCard={top(z.banish)} drop={isMe ? 'banish' : undefined}
+        handlers={g.bindPile(seat, 'banish')} />}
     </div>
   )
 }
 
-// Eigene Ansicht auf Tablet/Handy: Gegner-Felder nach Wunsch, beide Battlefields, dann Base, Runen, Legend und Stapel.
+// Eigene Ansicht auf Tablet/Handy: Gegner-Felder nach Wunsch, beide Battlefields, dann die eigene Matte; der Stack steht ganz rechts.
 // mineShow / oppShow: welche Zonen sichtbar sind (siehe Mehr > Ansicht).
 export function MyBoard({ players, mySeat, mineShow, oppShow }) {
   const me = players.find((p) => p.seat === mySeat)
@@ -251,20 +271,20 @@ export function MyBoard({ players, mySeat, mineShow, oppShow }) {
   const topSeats = new Set(players.filter((p) => p.seat !== mySeat).map((p) => p.seat))
   const opps = players.filter((p) => p.seat !== mySeat && p.state)
   const oppAny = oppShow && Object.values(oppShow).some(Boolean)
-  const mineAny = (k) => !mineShow || mineShow[k] !== false
   return (
-    <div className="myboard">
-      {oppAny && opps.map((o) => (
-        <div key={o.seat} className="opp">
-          <Tag player={o} />
-          {oppShow.base && <BaseRow player={o} />}
-          <OuterRow player={o} show={oppShow} />
-        </div>
-      ))}
-      <div className="bfrow">{players.map((pl) => <BfZone key={pl.seat} owner={pl} topSeats={topSeats} />)}</div>
-      <Tag player={me} />
-      {mineAny('base') && <BaseRow player={me} />}
-      <OuterRow player={me} show={mineShow} />
+    <div className="withstack">
+      <div className="myboard">
+        {oppAny && opps.map((o) => (
+          <div key={o.seat} className="opp">
+            <Tag player={o} />
+            <Mat player={o} show={oppShow} variant="top" />
+          </div>
+        ))}
+        <div className="bfrow">{players.map((pl) => <BfZone key={pl.seat} owner={pl} topSeats={topSeats} />)}</div>
+        <Tag player={me} />
+        <Mat player={me} show={mineShow} />
+      </div>
+      <StackCol />
     </div>
   )
 }
@@ -275,12 +295,11 @@ function Half({ player, variant }) {
   if (!player.state) {
     return <div className={cls}><Tag player={player} /><p className="muted pad">Wählt noch ein Deck…</p></div>
   }
-  // gespiegelt: Runen/Legend außen, Base Richtung Mitte
   return (
     <div className={cls} style={{ '--sc': seatColor(player.seat) }}>
       {variant === 'top'
-        ? <><Tag player={player} /><OuterRow player={player} /><BaseRow player={player} /></>
-        : <><BaseRow player={player} /><OuterRow player={player} /><Tag player={player} /></>}
+        ? <><Tag player={player} /><Mat player={player} variant="top" /></>
+        : <><Mat player={player} variant="bottom" /><Tag player={player} /></>}
     </div>
   )
 }
@@ -295,10 +314,13 @@ export function Table({ players, mySeat }) {
   const bottom = ordered.slice(topN)
   const topSeats = new Set(top.map((p) => p.seat))
   return (
-    <div className={`tvtable n${n}`}>
-      <div className="half">{top.map((pl) => <Half key={pl.seat} player={pl} variant="top" />)}</div>
-      <div className="mid">{players.map((pl) => <BfZone key={pl.seat} owner={pl} topSeats={topSeats} />)}</div>
-      <div className="half">{bottom.map((pl) => <Half key={pl.seat} player={pl} variant="bottom" />)}</div>
+    <div className="withstack tvwrap">
+      <div className={`tvtable n${n}`}>
+        <div className="half">{top.map((pl) => <Half key={pl.seat} player={pl} variant="top" />)}</div>
+        <div className="mid">{players.map((pl) => <BfZone key={pl.seat} owner={pl} topSeats={topSeats} />)}</div>
+        <div className="half">{bottom.map((pl) => <Half key={pl.seat} player={pl} variant="bottom" />)}</div>
+      </div>
+      <StackCol />
     </div>
   )
 }
