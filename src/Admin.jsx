@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabase'
-import { KINDS, COLORS, parseCardFilename } from './game'
+import { KINDS, COLORS, parseCardFilename, allowsSecondColor } from './game'
+import { parseSetNumber, fetchCardInfo, mapApiCard } from './cardlookup'
+
+const dbHint = (m) => (/color2|signature|\bcode\b/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-4.sql im SQL Editor ausführen.' : m)
 
 export default function Admin({ user }) {
   const [cards, setCards] = useState([])
@@ -28,14 +31,41 @@ export default function Admin({ user }) {
   }
 
   const exists = (r) =>
-    cards.some((c) => c.name.toLowerCase() === r.name.toLowerCase() && c.kind === r.kind && (c.color || '') === (r.color || ''))
+    cards.some((c) => (r.code && c.code ? c.code === r.code : c.name.toLowerCase() === r.name.toLowerCase() && c.kind === r.kind && (c.color || '') === (r.color || '') && (c.color2 || '') === (r.color2 || '')))
   const rows = queue.map((r) => ({ ...r, dup: exists(r) }))
-  const todo = rows.filter((r) => !r.dup)
+  const todo = rows.filter((r) => !r.dup && r.status !== 'lookup')
 
-  function choose(files) {
+  // Neue Dateien: erst aus dem Dateinamen lesen, bei Namen wie SFD-042 danach in der Riftcodex-Datenbank nachschlagen.
+  async function choose(files) {
     setMsg('')
-    setQueue([...files].map((file) => ({ file, ...parseCardFilename(file.name, { kind, color }) })))
+    const list = [...files].map((file, i) => {
+      const sn = parseSetNumber(file.name)
+      const base = parseCardFilename(file.name, { kind, color })
+      return { key: Date.now() + '-' + i, file, ...base, sn, code: null, note: '', status: sn ? 'lookup' : 'name' }
+    })
+    setQueue(list)
+    const update = (key, patch) => setQueue((qq) => qq.map((r) => (r.key === key ? { ...r, ...patch } : r)))
+    for (const r of list.filter((x) => x.sn)) {
+      try {
+        const c = await fetchCardInfo(r.sn.set, r.sn.num)
+        if (!c) { update(r.key, { name: r.file.name.replace(/\.[^.]+$/, ''), status: 'notfound' }); continue }
+        const m = mapApiCard(c)
+        update(r.key, {
+          name: m.name, kind: m.kind, color: m.color, color2: m.color2, signature: m.signature, code: m.code, status: 'found',
+          note: m.ignoredDomain ? `Datenbank nennt 2 Farben, übernommen wird nur ${m.color} (zweite Farbe nur bei Legend/Signature)` : '',
+        })
+      } catch (e) {
+        update(r.key, { status: 'error' })
+      }
+    }
   }
+  const edit = (key, patch) =>
+    setQueue((qq) => qq.map((r) => {
+      if (r.key !== key) return r
+      const n = { ...r, ...patch }
+      if (!allowsSecondColor(n.kind, n.signature)) n.color2 = null
+      return n
+    }))
 
   async function upload() {
     setBusy(true)
@@ -48,17 +78,25 @@ export default function Admin({ user }) {
       if (up.error) { setMsg(up.error.message); continue }
       const { data } = supabase.storage.from('cards').getPublicUrl(path)
       const ins = await supabase.from('cards').insert({
-        name: r.name, kind: r.kind, color: r.color || null, image_url: data.publicUrl, image_path: path,
+        name: r.name, kind: r.kind, color: r.color || null, color2: allowsSecondColor(r.kind, r.signature) ? r.color2 || null : null,
+        signature: !!r.signature, code: r.code || null, image_url: data.publicUrl, image_path: path,
       })
-      if (ins.error) setMsg(ins.error.message); else ok++
+      if (ins.error) {
+        await supabase.storage.from('cards').remove([path])
+        setMsg(dbHint(ins.error.message))
+      } else ok++
     }
     setBusy(false)
-    setQueue([])
-    setMsg(`${ok} von ${todo.length} Karten hochgeladen.`)
+    if (ok === todo.length) setQueue([])
+    setMsg((m) => `${ok} von ${todo.length} Karten hochgeladen.${m && ok !== todo.length ? ' ' + m : ''}`)
     load()
   }
 
-  const patch = async (id, values) => { await supabase.from('cards').update(values).eq('id', id); load() }
+  const patch = async (id, values) => {
+    const { error } = await supabase.from('cards').update(values).eq('id', id)
+    if (error) setMsg(dbHint(error.message))
+    load()
+  }
   async function remove(c) {
     if (!confirm(`„${c.name}“ löschen?`)) return
     if (c.image_path) await supabase.storage.from('cards').remove([c.image_path])
@@ -73,9 +111,10 @@ export default function Admin({ user }) {
       <section className="panel">
         <h2>Karten hochladen</h2>
         <p className="muted">
-          Name, Art und Farbe werden aus dem Dateinamen gelesen. Aufbau: <code>name_art_farbe_rest.webp</code>, zum Beispiel{' '}
-          <code>riven_unit_calm_3m-4p.webp</code> oder <code>jinx-loose-cannon_champion_chaos.png</code>. Art und Farbe können in
-          beliebiger Reihenfolge stehen, alles danach wird ignoriert. Fehlt etwas, gelten die Standardwerte hier:
+          Dateien mit Set-Nummer im Namen, zum Beispiel <code>SFD-042.webp</code>, werden automatisch in der offenen
+          Riftcodex-Kartendatenbank nachgeschlagen (Name, Art, Farben, Signature). Alternativ geht auch <code>name_art_farbe_rest.webp</code>,
+          zum Beispiel <code>riven_unit_calm_3m-4p.webp</code>; zweifarbig bei Legend/Signature: <code>viktor_legend_fury_mind.png</code>.
+          Du kannst alles in der Vorschau noch korrigieren. Fehlt etwas, gelten diese Standardwerte:
         </p>
         <div className="row">
           <label>Standard-Art
@@ -96,21 +135,48 @@ export default function Admin({ user }) {
         {rows.length > 0 && (
           <>
             <table className="preview">
-              <thead><tr><th>Datei</th><th>Name</th><th>Art</th><th>Farbe</th><th>Status</th></tr></thead>
+              <thead><tr><th>Datei</th><th>Name</th><th>Art</th><th>Signature</th><th>Farbe</th><th>Farbe 2</th><th>Status</th></tr></thead>
               <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i} className={r.dup ? 'skip' : ''}>
-                    <td className="muted">{r.file.name}</td>
-                    <td>{r.name}</td>
-                    <td className={r.fromName.kind ? '' : 'muted'}>{r.kind}</td>
-                    <td className={r.fromName.color ? '' : 'muted'}>{r.color || '–'}</td>
-                    <td>
-                      {r.dup ? 'schon vorhanden, wird übersprungen'
-                        : r.kind === 'Rune' && !r.color ? <span className="warn">Rune ohne Farbe</span>
-                        : 'bereit'}
-                    </td>
-                  </tr>
-                ))}
+                {rows.map((r) => {
+                  const two = allowsSecondColor(r.kind, r.signature)
+                  return (
+                    <tr key={r.key} className={r.dup ? 'skip' : ''}>
+                      <td className="muted">{r.file.name}{r.code && <div className="small">{r.code}</div>}</td>
+                      <td><input value={r.name} onChange={(e) => edit(r.key, { name: e.target.value })} /></td>
+                      <td>
+                        <select value={r.kind} onChange={(e) => edit(r.key, { kind: e.target.value })}>
+                          {KINDS.map((k) => <option key={k}>{k}</option>)}
+                        </select>
+                      </td>
+                      <td><input type="checkbox" checked={!!r.signature} onChange={(e) => edit(r.key, { signature: e.target.checked })} /></td>
+                      <td>
+                        <select value={r.color || ''} onChange={(e) => edit(r.key, { color: e.target.value || null })}>
+                          <option value="">–</option>
+                          {COLORS.map((k) => <option key={k}>{k}</option>)}
+                        </select>
+                      </td>
+                      <td>
+                        {two ? (
+                          <select value={r.color2 || ''} onChange={(e) => edit(r.key, { color2: e.target.value || null })}>
+                            <option value="">–</option>
+                            {COLORS.filter((k) => k !== r.color).map((k) => <option key={k}>{k}</option>)}
+                          </select>
+                        ) : <span className="muted">nur Legend/Signature</span>}
+                      </td>
+                      <td>
+                        {r.dup ? 'schon vorhanden, wird übersprungen'
+                          : r.status === 'lookup' ? 'sucht in der Kartendatenbank…'
+                          : r.status === 'notfound' ? <span className="warn">nicht gefunden, bitte selbst ausfüllen</span>
+                          : r.status === 'error' ? <span className="warn">Datenbank nicht erreichbar, bitte selbst ausfüllen</span>
+                          : r.kind === 'Rune' && !r.color ? <span className="warn">Rune ohne Farbe</span>
+                          : r.kind === 'Legend' && !r.color2 ? <span>{r.status === 'found' ? 'automatisch erkannt' : 'bereit'} · einfarbig</span>
+                          : r.status === 'found' ? 'automatisch erkannt'
+                          : 'bereit'}
+                        {r.note && <div className="warn small">{r.note}</div>}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
             <div className="row">
@@ -130,20 +196,34 @@ export default function Admin({ user }) {
           <input placeholder="Suchen" value={q} onChange={(e) => setQ(e.target.value)} />
         </div>
         <div className="admin-grid">
-          {shown.map((c) => (
-            <div key={c.id} className="admin-card">
-              <img src={c.image_url} alt={c.name} loading="lazy" />
-              <input defaultValue={c.name} onBlur={(e) => e.target.value !== c.name && patch(c.id, { name: e.target.value })} />
-              <select value={c.kind} onChange={(e) => patch(c.id, { kind: e.target.value })}>
-                {KINDS.map((k) => <option key={k}>{k}</option>)}
-              </select>
-              <select value={c.color || ''} onChange={(e) => patch(c.id, { color: e.target.value || null })}>
-                <option value="">keine Farbe</option>
-                {COLORS.map((k) => <option key={k}>{k}</option>)}
-              </select>
-              <button className="danger" onClick={() => remove(c)}>Löschen</button>
-            </div>
-          ))}
+          {shown.map((c) => {
+            const two = allowsSecondColor(c.kind, c.signature)
+            return (
+              <div key={c.id} className="admin-card">
+                <img src={c.image_url} alt={c.name} loading="lazy" />
+                {c.code && <span className="muted small">{c.code}</span>}
+                <input defaultValue={c.name} onBlur={(e) => e.target.value !== c.name && patch(c.id, { name: e.target.value })} />
+                <select value={c.kind} onChange={(e) => patch(c.id, { kind: e.target.value, ...(allowsSecondColor(e.target.value, c.signature) ? {} : { color2: null }) })}>
+                  {KINDS.map((k) => <option key={k}>{k}</option>)}
+                </select>
+                <label className="check small">
+                  <input type="checkbox" checked={!!c.signature} onChange={(e) => patch(c.id, { signature: e.target.checked, ...(allowsSecondColor(c.kind, e.target.checked) ? {} : { color2: null }) })} />
+                  Signature
+                </label>
+                <select value={c.color || ''} onChange={(e) => patch(c.id, { color: e.target.value || null })}>
+                  <option value="">keine Farbe</option>
+                  {COLORS.map((k) => <option key={k}>{k}</option>)}
+                </select>
+                {two && (
+                  <select value={c.color2 || ''} onChange={(e) => patch(c.id, { color2: e.target.value || null })}>
+                    <option value="">keine 2. Farbe</option>
+                    {COLORS.filter((k) => k !== c.color).map((k) => <option key={k}>{k}</option>)}
+                  </select>
+                )}
+                <button className="danger" onClick={() => remove(c)}>Löschen</button>
+              </div>
+            )
+          })}
         </div>
       </section>
     </div>
