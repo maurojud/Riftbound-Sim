@@ -3,6 +3,7 @@ export const ZONES = {
   hand: 'Hand',
   base: 'Base',
   battlefield: 'Battlefield',
+  bfUnits: 'Battlefield',
   deck: 'Deck',
   runeDeck: 'Runendeck',
   legend: 'Legend',
@@ -27,11 +28,11 @@ export const DEFAULT_SETTINGS = {
   trashInspect: true,       // andere dürfen den ganzen Trash ansehen
   handCount: true,          // Anzahl der Handkarten der anderen sichtbar
   battlefieldRandom: false, // Battlefield zufällig zuweisen statt selbst wählen
-  enforceTurns: true,       // nur wer den Fokus hat, darf spielen (sobald ein Zug gestartet wurde)
 }
 
-// Liest Name, Art und Farbe aus dem Dateinamen, z. B. riven_unit_calm_3m-4p.webp
-// Format: Name_Art_Farbe_Rest. Art und Farbe dürfen in beliebiger Reihenfolge stehen, der Rest wird ignoriert.
+// Liest Name, Art, Farben und Signature aus dem Dateinamen, z. B. riven_unit_calm_3m-4p.webp
+// Format: Name_Art_Farbe_Rest. Art und Farben dürfen in beliebiger Reihenfolge stehen, der Rest wird ignoriert.
+// Zwei Farben (nur Legend oder Signature): viktor_legend_fury_mind.png. Signature-Karten: ahri-spell_spell_signature_mind_calm.png
 // Im Namen steht - oder ein Leerzeichen für ein Leerzeichen (jinx-loose-cannon wird zu Jinx Loose Cannon).
 const KIND_ALIASES = { bf: 'Battlefield' }
 export function parseCardFilename(filename, defaults = {}) {
@@ -39,21 +40,32 @@ export function parseCardFilename(filename, defaults = {}) {
   const [rawName, ...rest] = base.split('_')
   const name = rawName.split(/[-\s]+/).filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
   let kind = null
-  let color = null
+  let signature = false
+  const colors = []
   for (const t of rest) {
     const k = t.toLowerCase()
     const kd = KINDS.find((x) => x.toLowerCase() === k) || KIND_ALIASES[k]
     const cl = COLORS.find((x) => x.toLowerCase() === k)
-    if (kd && !kind) kind = kd
-    else if (cl && !color) color = cl
+    if (k === 'signature' || k === 'sig') signature = true
+    else if (kd && !kind) kind = kd
+    else if (cl && colors.length < 2 && !colors.includes(cl)) colors.push(cl)
   }
+  const kindFinal = kind || defaults.kind || 'Unit'
+  const allowTwo = allowsSecondColor(kindFinal, signature)
   return {
     name: name || base,
-    kind: kind || defaults.kind || 'Unit',
-    color: color || defaults.color || null,
-    fromName: { kind: !!kind, color: !!color },
+    kind: kindFinal,
+    color: colors[0] || defaults.color || null,
+    color2: allowTwo ? colors[1] || null : null,
+    signature,
+    fromName: { kind: !!kind, color: colors.length > 0 },
   }
 }
+
+// Zweifarbige Karten gibt es nur bei Legends und Signature-Karten.
+export const allowsSecondColor = (kind, signature) => String(kind || '').toLowerCase() === 'legend' || !!signature
+// Alle Farben einer Karte (eine oder zwei)
+export const colorsOf = (c) => [c?.color, c?.color2].filter(Boolean)
 
 export const kindOf = (c) => (c?.kind || '').toLowerCase()
 
@@ -117,10 +129,15 @@ export function canAdd(qty, byId, card) {
 
 // ───────── Spielzustand ─────────
 const emptyZones = () => ({
-  hand: [], base: [], battlefield: [], deck: [], runeDeck: [], legend: [], champion: [], runes: [], trash: [], banish: [], bfPool: [],
+  hand: [], base: [], battlefield: [], bfUnits: [], deck: [], runeDeck: [], legend: [], champion: [], runes: [], trash: [], banish: [], bfPool: [],
 })
 const clone = (p) => JSON.parse(JSON.stringify(p))
 export const isValidState = (s) => !!(s && s.zones && s.zones.base)
+// Ältere Spielstände ohne Battlefield-Einheiten ergänzen
+export function fixState(s) {
+  if (!isValidState(s)) return null
+  return s.zones.bfUnits ? s : { ...s, zones: { ...s.zones, bfUnits: [] } }
+}
 
 export function buildPlayer(deck, cardsById, settings = DEFAULT_SETTINGS) {
   const zones = emptyZones()
@@ -143,7 +160,7 @@ export function buildPlayer(deck, cardsById, settings = DEFAULT_SETTINGS) {
     zones.battlefield.push(zones.bfPool.splice(pick, 1)[0])
   }
   return {
-    v: 2, points: 0, deckName: deck.name, zones,
+    v: 3, points: 0, deckName: deck.name, zones,
     setup: { battlefield: zones.bfPool.length > 0 && zones.battlefield.length === 0, champion: true },
   }
 }
@@ -165,14 +182,30 @@ function take(p, instId) {
   return null
 }
 
-// to: Zonenname oder deckTop, deckBottom, runeDeckTop, runeDeckBottom. Index 0 = oben bei Decks, letzte Karte = oben im Trash/Banish.
+// Zonen, in denen eine Karte "im Spiel" ist (dort bleiben Tappen, Marken und verdeckt beim Verschieben erhalten)
+const BOARD = ['base', 'bfUnits']
+const isBoardTarget = (to) => to === 'base' || to.startsWith('bf:')
+
+// to: Zonenname, deckTop, deckBottom, runeDeckTop, runeDeckBottom oder bf:<Sitz> (Battlefield des Spielers mit diesem Sitz).
+// Index 0 = oben bei Decks, letzte Karte = oben im Trash/Banish.
 export function moveCard(p, instId, to) {
   const n = clone(p)
+  const f = findInst(n, instId)
+  if (!f) return p
+  const valid = to.startsWith('bf:') || ['deckTop', 'deckBottom', 'runeDeckTop', 'runeDeckBottom'].includes(to) || (n.zones[to] && !['bfUnits', 'bfPool'].includes(to))
+  if (!valid) return p
   const inst = take(n, instId)
-  if (!inst) return p
-  inst.tapped = false
-  inst.faceDown = false
-  if (to === 'deckTop') n.zones.deck.unshift(inst)
+  const boardMove = BOARD.includes(f.zone) && isBoardTarget(to)
+  if (!boardMove) {
+    inst.tapped = false
+    delete inst.counters
+    delete inst.status
+  }
+  // verdeckt bleibt nur beim Spielen auf Base/Battlefield bestehen (Hand → Tisch oder Tisch → Tisch)
+  if (!isBoardTarget(to)) inst.faceDown = false
+  delete inst.at
+  if (to.startsWith('bf:')) { inst.at = Number(to.slice(3)); n.zones.bfUnits.push(inst) }
+  else if (to === 'deckTop') n.zones.deck.unshift(inst)
   else if (to === 'deckBottom') n.zones.deck.push(inst)
   else if (to === 'runeDeckTop') n.zones.runeDeck.unshift(inst)
   else if (to === 'runeDeckBottom') n.zones.runeDeck.push(inst)
@@ -180,19 +213,68 @@ export function moveCard(p, instId, to) {
   return n
 }
 
-// Wohin darf eine Karte? Runen und Legend sind streng, alles andere frei.
-const FREE_TARGETS = ['base', 'battlefield', 'hand', 'champion', 'trash', 'banish', 'deckTop', 'deckBottom']
-export function targetsFor(card, zone) {
+// Wohin darf eine Karte gezogen werden? Runen und Legend sind streng, alles andere frei.
+// bfSeats: Sitze, deren Battlefield im Spiel ist (jedes ist ein Ziel bf:<Sitz>). inst wird gebraucht, um das aktuelle Battlefield auszuschließen.
+export function targetsFor(card, zone, bfSeats = [], inst = null) {
   const k = kindOf(card)
   let list
-  if (k === 'rune') list = ['runes', 'runeDeckTop', 'runeDeckBottom']
+  if (k === 'rune') list = zone === 'runes' ? ['runeDeckTop', 'runeDeckBottom'] : []
   else if (k === 'legend' || k === 'battlefield') list = []
-  else list = FREE_TARGETS
-  return list.filter((t) => t !== zone)
+  else list = ['base', ...bfSeats.map((s) => `bf:${s}`), 'hand', 'champion', 'trash', 'banish', 'deckTop', 'deckBottom']
+  const here = zone === 'bfUnits' && inst ? `bf:${inst.at}` : zone
+  return list.filter((t) => t !== here)
 }
-const TAP_ZONES = ['base', 'battlefield', 'champion', 'runes', 'legend']
+
+const TAP_ZONES = ['base', 'bfUnits', 'champion', 'runes', 'legend']
 export const canTap = (card, zone) => TAP_ZONES.includes(zone) && kindOf(card) !== 'battlefield'
-export const canFlip = (card, zone) => ['base', 'battlefield', 'champion'].includes(zone) && !['legend', 'battlefield', 'rune'].includes(kindOf(card))
+// "Hide": nur in der Hand einstellbar, die Karte wird dann verdeckt gespielt. Aufdecken geschieht später auf dem Tisch.
+export const canHide = (card, zone) => zone === 'hand' && !['legend', 'battlefield', 'rune'].includes(kindOf(card))
+export const canReveal = (inst, zone) => !!inst?.faceDown && ['base', 'bfUnits', 'champion'].includes(zone)
+// Marken (Buff, Schaden, Might, Status) gibt es für Karten im Spiel
+export const canMark = (card, zone) => BOARD.includes(zone) && !['legend', 'battlefield', 'rune'].includes(kindOf(card))
+
+export const COUNTERS = [
+  { key: 'buff', label: 'Buff', min: 0 },
+  { key: 'damage', label: 'Schaden', min: 0 },
+  { key: 'might', label: 'Might', min: -9, signed: true },
+  { key: 'marker', label: 'Marker', min: 0 },
+]
+export const STATUSES = [{ key: 'stunned', label: 'Stunned' }]
+
+export function changeCounter(p, instId, key, delta) {
+  const n = clone(p)
+  const f = findInst(n, instId)
+  const def = COUNTERS.find((c) => c.key === key)
+  if (!f || !def) return p
+  const c = { ...(f.inst.counters || {}) }
+  const v = Math.min(99, Math.max(def.min, (c[key] || 0) + delta))
+  if (v === 0) delete c[key]
+  else c[key] = v
+  if (Object.keys(c).length) f.inst.counters = c
+  else delete f.inst.counters
+  return n
+}
+
+export function toggleStatus(p, instId, key) {
+  const n = clone(p)
+  const f = findInst(n, instId)
+  if (!f) return p
+  const st = { ...(f.inst.status || {}) }
+  if (st[key]) delete st[key]
+  else st[key] = true
+  if (Object.keys(st).length) f.inst.status = st
+  else delete f.inst.status
+  return n
+}
+
+export function clearMarks(p, instId) {
+  const n = clone(p)
+  const f = findInst(n, instId)
+  if (!f) return p
+  delete f.inst.counters
+  delete f.inst.status
+  return n
+}
 
 export function toggleFlag(p, instId, flag) {
   const n = clone(p)
@@ -221,7 +303,7 @@ export function shuffleZone(p, zone) {
 
 export function untapAll(p) {
   const n = clone(p)
-  for (const z of TAP_ZONES) n.zones[z].forEach((c) => (c.tapped = false))
+  for (const z of TAP_ZONES) (n.zones[z] || []).forEach((c) => (c.tapped = false))
   return n
 }
 
