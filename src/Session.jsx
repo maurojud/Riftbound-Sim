@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { supabase } from './supabase'
 import { go } from './nav'
-import { Table, MyBoard, CardView, CounterPanel, GameCtx } from './Table'
+import { Table, MyBoard, CardView, CounterPanel, GameCtx, seatColor } from './Table'
+import CardImg, { applyBfRotation, setBfRotation } from './CardImg'
 import {
   ZONES, DEFAULT_SETTINGS, buildPlayer, moveCard, toggleFlag, draw, drawRune, shuffleZone, untapAll, addPoints,
-  pickBattlefield, pickChampion, targetsFor, canTap, canHide, canReveal, canMark, changeCounter, toggleStatus, clearMarks,
-  analyzeDeck, fixState, findInst,
+  pickBattlefield, pickChampion, targetsFor, canTap, canHide, canReveal, canMark, canAim, canGive, changeCounter, toggleStatus, clearMarks,
+  analyzeDeck, fixState, findInst, kindOf, toggleTarget, removeTarget, clearTargets, giveCard, acceptGift, dropGift, takeBackGifts,
+  setApproval, resolveStackCard, showCards,
 } from './game'
 
 export const SETTING_LABELS = {
@@ -14,6 +16,15 @@ export const SETTING_LABELS = {
   handCount: 'Anzahl der Handkarten der anderen sichtbar',
   battlefieldRandom: 'Battlefield zufällig zuweisen (gilt für neue Deckwahl)',
 }
+
+export const VIEW_ZONES = [
+  ['base', 'Base'], ['runes', 'Runen'], ['legend', 'Legend'], ['champion', 'Champion'], ['deck', 'Deck'],
+  ['runeDeck', 'Runendeck'], ['hand', 'Hand (Anzahl)'], ['trash', 'Trash'], ['banish', 'Banish'],
+]
+const loadPrefs = () => {
+  try { return JSON.parse(localStorage.getItem('rt:view') || '{}') } catch { return {} }
+}
+const savePrefs = (p) => { try { localStorage.setItem('rt:view', JSON.stringify(p)) } catch { /* ohne Speicher */ } }
 
 const newest = (a, b) => (!a ? b : !b ? a : (a.ts || 0) >= (b.ts || 0) ? a : b)
 const zoneAt = (x, y) => document.elementFromPoint(x, y)?.closest('[data-drop]')?.dataset.drop || null
@@ -29,7 +40,7 @@ function Modal({ title, onClose, children }) {
   )
 }
 
-// Kleines Menü (nur für "Mehr"), keine Kartenmenüs mehr: Karten werden per Drag and Drop bewegt
+// Kleines Menü: Mehr, Karten-Optionen (Rechtsklick/langes Drücken), Deck-Optionen und die Frage oben/unten nach dem Ablegen auf ein Deck
 function PopMenu({ menu, onClose }) {
   const ref = useRef(null)
   const [pos, setPos] = useState({ left: menu.x, top: menu.y })
@@ -43,6 +54,7 @@ function PopMenu({ menu, onClose }) {
   return (
     <div className="ctx-bg" onPointerDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }}>
       <div className="ctxmenu" ref={ref} style={pos} onPointerDown={(e) => e.stopPropagation()}>
+        {menu.title && <div className="t strong">{menu.title}</div>}
         {menu.items.map((it, i) => (
           <button key={i} disabled={it.disabled} onClick={() => { onClose(); it.run() }}>{it.label}</button>
         ))}
@@ -62,6 +74,142 @@ function Floating({ rect, children, onEnter, onLeave }) {
     setPos({ left: Math.max(6, Math.min(rect.left, window.innerWidth - r.width - 6)), top })
   }, [rect])
   return <div className="floating" ref={ref} style={pos} onPointerEnter={onEnter} onPointerLeave={onLeave}>{children}</div>
+}
+
+// Zielpfeile zwischen Karten (SVG über dem ganzen Tisch). Eigene Pfeile lassen sich per Klick entfernen.
+function ArrowLayer({ players, mySeat, onRemove }) {
+  const [, setTick] = useState(0)
+  const arrows = []
+  for (const pl of players) {
+    for (const list of Object.values(pl.state?.zones || {})) {
+      for (const inst of list) for (const t of inst.targets || []) arrows.push({ from: inst.id, to: t, seat: pl.seat })
+    }
+  }
+  const key = arrows.map((a) => a.from + '>' + a.to).join('|')
+  useEffect(() => {
+    if (!key) return undefined
+    const f = () => setTick((t) => t + 1)
+    const i = setInterval(f, 250)
+    addEventListener('resize', f)
+    addEventListener('scroll', f, true)
+    return () => { clearInterval(i); removeEventListener('resize', f); removeEventListener('scroll', f, true) }
+  }, [key])
+  if (!arrows.length) return null
+  const rectOf = (id) => {
+    const el = [...document.querySelectorAll(`[data-iid="${id}"]`)].find((e) => e.offsetParent !== null || e.getClientRects().length)
+    return el ? el.getBoundingClientRect() : null
+  }
+  const edge = (r, dx, dy) => {
+    const sx = dx ? r.width / 2 / Math.abs(dx) : Infinity
+    const sy = dy ? r.height / 2 / Math.abs(dy) : Infinity
+    return Math.min(sx, sy)
+  }
+  return (
+    <svg className="arrows" width="100%" height="100%">
+      {arrows.map((a) => {
+        const ra = rectOf(a.from)
+        const rb = rectOf(a.to)
+        if (!ra || !rb) return null
+        const ca = { x: ra.left + ra.width / 2, y: ra.top + ra.height / 2 }
+        const cb = { x: rb.left + rb.width / 2, y: rb.top + rb.height / 2 }
+        const dx = cb.x - ca.x
+        const dy = cb.y - ca.y
+        if (!dx && !dy) return null
+        const sa = Math.min(1, edge(ra, dx, dy))
+        const sb = Math.min(1, edge(rb, dx, dy))
+        const p1 = { x: ca.x + dx * sa, y: ca.y + dy * sa }
+        const p2 = { x: cb.x - dx * sb, y: cb.y - dy * sb }
+        const len = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+        if (len < 4) return null
+        const ux = (p2.x - p1.x) / len
+        const uy = (p2.y - p1.y) / len
+        const hs = 13
+        const b1 = { x: p2.x - ux * hs + uy * hs * 0.5, y: p2.y - uy * hs - ux * hs * 0.5 }
+        const b2 = { x: p2.x - ux * hs - uy * hs * 0.5, y: p2.y - uy * hs + ux * hs * 0.5 }
+        const col = seatColor(a.seat)
+        const mine = a.seat === mySeat
+        return (
+          <g key={a.from + '>' + a.to} className={'arrow' + (mine ? ' mine' : '')} onClick={mine ? () => onRemove(a.from, a.to) : undefined}>
+            <title>{mine ? 'Klicken, um den Pfeil zu entfernen' : 'Zielpfeil'}</title>
+            <line x1={p1.x} y1={p1.y} x2={p2.x - ux * 4} y2={p2.y - uy * 4} stroke="#000" strokeOpacity=".45" strokeWidth="7" strokeLinecap="round" />
+            <line x1={p1.x} y1={p1.y} x2={p2.x - ux * 4} y2={p2.y - uy * 4} stroke={col} strokeWidth="4" strokeLinecap="round" />
+            <polygon points={`${p2.x},${p2.y} ${b1.x},${b1.y} ${b2.x},${b2.y}`} fill={col} stroke="#000" strokeOpacity=".45" strokeWidth="1.5" />
+            {mine && <line className="hit" x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth="22" />}
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
+// Oberste Karten von Deck oder Runendeck ansehen: pro Karte oben/unten legen, in die Hand nehmen oder kurz allen zeigen
+function LookModal({ zone, mine, cards, act, onClose }) {
+  const list = mine.zones[zone]
+  const [n, setN] = useState(Math.min(3, list.length) || 1)
+  const [ids, setIds] = useState(() => list.slice(0, n).map((i) => i.id))
+  const [done, setDone] = useState([])
+  const change = (d) => {
+    const nn = Math.max(1, Math.min(list.length || 1, n + d))
+    setN(nn); setIds(list.slice(0, nn).map((i) => i.id)); setDone([])
+  }
+  const cur = ids.filter((id) => !done.includes(id)).map((id) => list.find((i) => i.id === id)).filter(Boolean)
+  const rune = zone === 'runeDeck'
+  const mv = (id, to) => { act((p) => moveCard(p, id, to)); setDone((d) => [...d, id]) }
+  return (
+    <Modal title={`${rune ? 'Runendeck' : 'Deck'}: oberste Karten`} onClose={onClose}>
+      <div className="row look-n">
+        <span>Anzahl</span>
+        <button onClick={() => change(-1)} aria-label="weniger">−</button><b>{n}</b><button onClick={() => change(1)} aria-label="mehr">+</button>
+        <span className="muted small">{list.length} Karten im Stapel</span>
+      </div>
+      {cur.length === 0 && <p className="muted">Keine Karten mehr in dieser Auswahl.</p>}
+      <div className="look-list">
+        {cur.map((inst, i) => (
+          <div key={inst.id} className="look-item">
+            <span className="muted small">{i === 0 ? 'oberste' : `${i + 1}.`}</span>
+            <CardView card={cards[inst.cardId]} inst={inst} small />
+            <div className="look-btns">
+              <button onClick={() => mv(inst.id, rune ? 'runeDeckTop' : 'deckTop')}>Oben</button>
+              <button onClick={() => mv(inst.id, rune ? 'runeDeckBottom' : 'deckBottom')}>Unten</button>
+              <button onClick={() => mv(inst.id, rune ? 'runes' : 'hand')}>{rune ? 'Runenzone' : 'Hand'}</button>
+              {!rune && <button onClick={() => mv(inst.id, 'trash')}>Trash</button>}
+              <button className="ghostbtn" onClick={() => act((p) => showCards(p, [inst.cardId]))}>Allen zeigen</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="muted small">„Oben“ legt die Karte zurück auf den Stapel. Die zuletzt gelegte Karte liegt ganz oben.</p>
+    </Modal>
+  )
+}
+
+function ViewModal({ prefs, setPrefs, rot, setRot, onClose }) {
+  const set = (who, k, v) => setPrefs((p) => { const n = { ...p, [who]: { ...(p[who] || {}), [k]: v } }; savePrefs(n); return n })
+  const val = (who, k) => prefs[who]?.[k] ?? who === 'mine'
+  return (
+    <Modal title="Ansicht anpassen" onClose={onClose}>
+      <p className="muted small">Gilt nur für dich, im Reiter „Mein Spiel“. Der Fernseher und „Ganzer Tisch“ zeigen immer alles.</p>
+      <div className="view-cols">
+        <div className="stack">
+          <h4>Meine Zonen</h4>
+          {VIEW_ZONES.map(([k, label]) => (
+            <label key={k} className="check"><input type="checkbox" checked={val('mine', k)} onChange={(e) => set('mine', k, e.target.checked)} />{label}</label>
+          ))}
+        </div>
+        <div className="stack">
+          <h4>Zonen der Gegner</h4>
+          {VIEW_ZONES.map(([k, label]) => (
+            <label key={k} className="check"><input type="checkbox" checked={val('opp', k)} onChange={(e) => set('opp', k, e.target.checked)} />{label}</label>
+          ))}
+        </div>
+      </div>
+      <hr />
+      <label className="check">
+        <input type="checkbox" checked={rot === '-90'} onChange={(e) => setRot(setBfRotation(e.target.checked ? '-90' : '90'))} />
+        Battlefield-Bilder andersherum drehen (falls sie auf dem Kopf stehen)
+      </label>
+    </Modal>
+  )
 }
 
 function DeckPicker({ cards, onPick }) {
@@ -127,9 +275,9 @@ export function HandFan({ hand, cards, cw, bind, drag, onHide }) {
   const over = drag?.over === 'hand' && drag.allowed.includes('hand')
   return (
     <div className={'fan' + (drag ? ' dragging' : '') + (drag && drag.allowed.includes('hand') ? ' dropok' : '') + (over ? ' dropover' : '')}
-      data-drop="hand" style={{ '--cw': cw + 'px', height: cw * 1.4 + 74 }}>
+      data-drop="hand" style={{ '--cw': cw + 'px', height: cw * 1.12 + 48 }}>
       <div className="fan-drop" data-drop="hand" />
-      {n === 0 && <span className="muted fan-empty">Keine Handkarten. Tippe auf dein Deck, um zu ziehen.</span>}
+      {n === 0 && <span className="muted fan-empty">Keine Handkarten. Klicke auf dein Deck, um zu ziehen.</span>}
       <div className="fan-inner" style={{ width: total }}>
         {hand.map((inst, i) => {
           const off = i - mid
@@ -169,9 +317,15 @@ export default function Session({ id, view, user }) {
   const [hover, setHover] = useState(null)        // { id, zone, rect }
   const hoverTimer = useRef(null)
   const lastSecondary = useRef(0)
+  const lastPtype = useRef('mouse')
   const [drag, setDrag] = useState(null)
   const dragRef = useRef(null)
   const ghostRef = useRef(null)
+  const [aim, setAim] = useState(null)            // Karte, für die gerade ein Zielpfeil gesetzt wird
+  const [showing, setShowing] = useState(null)    // kurz gezeigte Karten eines Mitspielers
+  const seenShown = useRef({})
+  const [prefs, setPrefs] = useState(loadPrefs)
+  const [rot, setRot] = useState(() => applyBfRotation())
   const [err, setErr] = useState('')
   const [vw, setVw] = useState(window.innerWidth)
 
@@ -181,7 +335,7 @@ export default function Session({ id, view, user }) {
     return () => removeEventListener('resize', f)
   }, [])
   useEffect(() => {
-    const k = (e) => { if (e.key === 'Escape') { setPreview(null); setHover(null) } }
+    const k = (e) => { if (e.key === 'Escape') { setPreview(null); setHover(null); setAim(null); setMenu(null) } }
     addEventListener('keydown', k)
     return () => removeEventListener('keydown', k)
   }, [])
@@ -250,6 +404,42 @@ export default function Session({ id, view, user }) {
   const stateOf = (seat) => players.find((p) => p.seat === seat)?.state
   const bfSeats = players.filter((p) => p.state?.zones.battlefield.length).map((p) => p.seat)
 
+  // ───────── Übergaben: Karten, die Mitspieler mir gegeben haben, übernehmen; eigene erledigte Übergaben aufräumen ─────────
+  const giftKey = players.map((p) => p.seat + ':' + (p.state?.outbox || []).map((g) => `${g.inst.id}>${g.to}`).join(',')).join(';')
+    + '|' + (mine?.outbox || []).map((g) => g.inst.id + (stateOf(g.to) && findInst(stateOf(g.to), g.inst.id) ? '+' : '-')).join(',')
+  useEffect(() => {
+    if (!mySeat || !mineRef.current) return
+    let next = mineRef.current
+    let changed = false
+    for (const pl of players) {
+      if (pl.seat === mySeat) continue
+      for (const g of pl.state?.outbox || []) {
+        if (g.to === mySeat && !findInst(next, g.inst.id)) { next = acceptGift(next, g); changed = true }
+      }
+    }
+    for (const g of next.outbox || []) {
+      const rs = stateOf(g.to)
+      if (rs && findInst(rs, g.inst.id)) { next = dropGift(next, g.inst.id); changed = true }
+    }
+    if (changed) commit(next)
+  }, [giftKey]) // eslint-disable-line
+
+  // ───────── Kurz gezeigte Karten (z. B. beim Ansehen der obersten Deckkarten) ─────────
+  useEffect(() => {
+    for (const pl of players) {
+      const sh = pl.state?.shown
+      if (!sh || seenShown.current[pl.seat] === sh.at) continue
+      const first = seenShown.current[pl.seat] === undefined
+      seenShown.current[pl.seat] = sh.at
+      if (first && Date.now() - sh.at > 15000) continue
+      if (pl.seat === mySeat) continue
+      setShowing({ name: pl.name, cardIds: sh.cardIds, at: sh.at })
+      const t = setTimeout(() => setShowing((cur) => (cur && cur.at === sh.at ? null : cur)), 6000)
+      return () => clearTimeout(t)
+    }
+    return undefined
+  }, [players.map((p) => p.state?.shown?.at || 0).join(',')]) // eslint-disable-line
+
   // ───────── Hover-Zähler ─────────
   const keepHover = () => clearTimeout(hoverTimer.current)
   const hideHover = () => { clearTimeout(hoverTimer.current); hoverTimer.current = setTimeout(() => setHover(null), 260) }
@@ -260,7 +450,8 @@ export default function Session({ id, view, user }) {
   })
 
   // ───────── Karten-Interaktion ─────────
-  // Linksklick: Vorschau. Rechtsklick oder langes Drücken: Tappen (verdeckte Karte auf dem Tisch: aufdecken). Ziehen: verschieben.
+  // Maus: Linksklick = Vorschau, Rechtsklick = Tappen (verdeckte Karte: aufdecken), Ziehen = verschieben.
+  // Touch/Stift: kurzes Tippen = Tappen (verdeckt: aufdecken), langes Drücken = Optionen. Wo es nichts zu tappen gibt, vergrößert das Tippen.
   function openPreview(seat, zone, inst) {
     setHover(null)
     setPreview({ seat, zone, id: inst.id, cardId: inst.cardId })
@@ -285,40 +476,104 @@ export default function Session({ id, view, user }) {
     dragRef.current = null
     setDrag(null)
     const over = zoneAt(x, y)
-    if (d && over && d.allowed.includes(over)) act((p) => moveCard(p, d.id, over))
+    if (!d || !over || !d.allowed.includes(over)) return
+    if (over === 'deck' || over === 'runeDeck') {
+      // oben oder unten wird erst nach dem Loslassen gefragt
+      const rune = over === 'runeDeck'
+      setMenu({
+        x, y, title: rune ? 'Auf das Runendeck legen' : 'Auf das Deck legen',
+        items: [
+          { label: 'Oben drauf', run: () => act((p) => moveCard(p, d.id, rune ? 'runeDeckTop' : 'deckTop')) },
+          { label: 'Ganz unten', run: () => act((p) => moveCard(p, d.id, rune ? 'runeDeckBottom' : 'deckBottom')) },
+        ],
+      })
+      return
+    }
+    act((p) => moveCard(p, d.id, over))
   }
   useEffect(() => {
     if (drag && ghostRef.current) ghostRef.current.style.transform = `translate(${drag.x - drag.w / 2}px, ${drag.y - drag.w * 0.7}px)`
   }, [drag?.id]) // eslint-disable-line
 
+  // Alles, was man mit einer eigenen Karte tun kann (für Menü, Vorschau und Hover-Feld)
+  function actionsFor(iid) {
+    const cur = findInst(mineRef.current, iid)
+    if (!cur) return []
+    const { zone, inst } = cur
+    const card = cards[inst.cardId]
+    const items = [{ key: 'view', label: 'Vergrößern', run: () => openPreview(mySeat, zone, inst) }]
+    if (canReveal(inst, zone)) items.push({ key: 'reveal', label: 'Aufdecken', run: () => act((p) => toggleFlag(p, iid, 'faceDown')) })
+    if (canTap(card, zone)) items.push({ key: 'tap', label: inst.tapped ? 'Enttappen' : 'Tappen', run: () => act((p) => toggleFlag(p, iid, 'tapped')) })
+    if (canHide(card, zone)) items.push({ key: 'hide', label: inst.faceDown ? 'Nicht mehr verdeckt spielen' : 'Verdeckt spielen', run: () => act((p) => toggleFlag(p, iid, 'faceDown')) })
+    if (canMark(card, zone)) items.push({ key: 'marks', label: 'Zähler & Status', run: () => openPreview(mySeat, zone, inst) })
+    if (canAim(zone)) {
+      items.push({ key: 'aim', label: '➚ Ziel wählen (Pfeil)', run: () => { setPreview(null); setHover(null); setAim(iid) } })
+      if (inst.targets?.length) items.push({ key: 'unaim', label: 'Pfeile entfernen', run: () => act((p) => clearTargets(p, iid)) })
+    }
+    if (canGive(card, zone)) {
+      for (const pl of players) {
+        if (pl.seat !== mySeat) items.push({ key: 'give', label: `An ${pl.name} geben`, run: () => { setPreview(null); setHover(null); act((p) => giveCard(p, iid, pl.seat)) } })
+      }
+    }
+    return items
+  }
+  function pickTarget(targetId) {
+    const from = aim
+    setAim(null)
+    if (from && from !== targetId) act((p) => toggleTarget(p, from, targetId))
+  }
+
   function bindCard(seat, zone, inst, opts = {}) {
     const card = cards[inst.cardId]
     const own = seat === mySeat
+    if (aim) {
+      if (zone === 'hand') return {}
+      return { onClick: () => pickTarget(inst.id), onContextMenu: (e) => e.preventDefault() }
+    }
     if (!own) return { onClick: () => { if (!inst.faceDown) openPreview(seat, zone, inst) } }
 
+    // zweite Aktion: Tappen bzw. Aufdecken
     const secondary = () => {
       const now = Date.now()
-      if (now - lastSecondary.current < 700) return // Langdruck löst auf manchen Geräten zusätzlich ein Kontextmenü-Ereignis aus
+      if (now - lastSecondary.current < 700) return
       lastSecondary.current = now
       const cur = findInst(mineRef.current, inst.id)
-      if (!cur) return
-      if (canReveal(cur.inst, cur.zone)) act((p) => toggleFlag(p, inst.id, 'faceDown'))
-      else if (canTap(card, cur.zone)) {
+      if (!cur) return false
+      if (canReveal(cur.inst, cur.zone)) { act((p) => toggleFlag(p, inst.id, 'faceDown')); return true }
+      if (canTap(card, cur.zone)) {
         act((p) => toggleFlag(p, inst.id, 'tapped'))
         navigator.vibrate?.(15)
+        return true
       }
+      return false
     }
-    const onContextMenu = (e) => { e.preventDefault(); secondary() }
+    const quick = (ptype) => {
+      if (ptype === 'mouse') return openPreview(seat, zone, inst)
+      const cur = findInst(mineRef.current, inst.id)
+      if (cur && (canReveal(cur.inst, cur.zone) || canTap(card, cur.zone))) secondary()
+      else openPreview(seat, zone, inst)
+    }
+    const openMenu = (x, y) => {
+      const items = actionsFor(inst.id)
+      if (!items.length) return
+      navigator.vibrate?.(20)
+      setMenu({ x, y, items, title: card?.name })
+    }
+    const onContextMenu = (e) => {
+      e.preventDefault()
+      if (lastPtype.current === 'mouse') secondary() // bei Touch kommt das lange Drücken über den Timer
+    }
     const onPointerDown = (e) => {
       if (e.button > 0 || e.ctrlKey) return
+      lastPtype.current = e.pointerType
+      const ptype = e.pointerType
       const sx = e.clientX
       const sy = e.clientY
       const w = e.currentTarget.getBoundingClientRect().width
       let dragging = false
       let long = false
       let moved = false
-      // Langes Drücken gilt nur für Touch/Stift (Maus hat den Rechtsklick), sonst würde langsames Klicken tappen
-      const timer = e.pointerType === 'mouse' ? null : setTimeout(() => { long = true; cleanup(); secondary() }, 520)
+      const timer = ptype === 'mouse' ? null : setTimeout(() => { long = true; cleanup(); openMenu(sx, sy) }, 520)
       const move = (ev) => {
         if (long) return
         if (!dragging) {
@@ -336,7 +591,7 @@ export default function Session({ id, view, user }) {
         cleanup(); clearTimeout(timer)
         if (long) return
         if (dragging) endDrag(ev.clientX, ev.clientY)
-        else if (!moved) openPreview(seat, zone, inst)
+        else if (!moved) quick(ptype)
       }
       const cancel = () => { cleanup(); clearTimeout(timer); if (dragging) { dragRef.current = null; setDrag(null) } }
       function cleanup() {
@@ -349,7 +604,7 @@ export default function Session({ id, view, user }) {
       addEventListener('pointercancel', cancel)
     }
     const h = { onPointerDown, onContextMenu }
-    if (canMark(card, zone)) {
+    if (canMark(card, zone) || canAim(zone) || canGive(card, zone)) {
       h.onPointerEnter = (e) => {
         if (e.pointerType !== 'mouse' || dragRef.current) return
         keepHover()
@@ -361,14 +616,65 @@ export default function Session({ id, view, user }) {
     return h
   }
 
+  // ───────── Stapel: Linksklick/Tippen = Aktion, Rechtsklick/langes Drücken = Menü ─────────
   function onZone(seat, zone) {
     if (seat === mySeat) {
       if (zone === 'deck') return act((p) => draw(p, 1))
       if (zone === 'runeDeck') return act((p) => drawRune(p, 1))
       if (zone === 'trash' || zone === 'banish') setModal({ type: 'zone', zone, seat })
-      return
+      return undefined
     }
     if (zone === 'banish' || (zone === 'trash' && settings.trashInspect)) setModal({ type: 'zone', zone, seat })
+    return undefined
+  }
+  function pileMenu(zone) {
+    if (zone === 'deck') {
+      return [
+        { label: 'Mischen', run: () => act((p) => shuffleZone(p, 'deck')) },
+        { label: 'Oberste Karten ansehen…', run: () => setModal({ type: 'look', zone: 'deck' }) },
+        { label: '4 Karten ziehen', run: () => act((p) => draw(p, 4)) },
+      ]
+    }
+    if (zone === 'runeDeck') {
+      return [
+        { label: 'Mischen', run: () => act((p) => shuffleZone(p, 'runeDeck')) },
+        { label: 'Oberste Karten ansehen…', run: () => setModal({ type: 'look', zone: 'runeDeck' }) },
+      ]
+    }
+    return null
+  }
+  function bindPile(seat, zone) {
+    if (seat !== mySeat) return { onClick: () => onZone(seat, zone) }
+    const items = pileMenu(zone)
+    const openMenu = (x, y) => {
+      if (!items) return
+      navigator.vibrate?.(20)
+      setMenu({ x, y, items, title: zone === 'deck' ? 'Deck' : 'Runendeck' })
+    }
+    return {
+      onClick: (e) => { if (e.detail === 0) onZone(seat, zone) }, // Tastatur
+      onContextMenu: (e) => { e.preventDefault(); if (lastPtype.current === 'mouse') openMenu(e.clientX, e.clientY) },
+      onPointerDown: (e) => {
+        if (e.button > 0) return
+        lastPtype.current = e.pointerType
+        const sx = e.clientX
+        const sy = e.clientY
+        let long = false
+        let moved = false
+        const timer = e.pointerType === 'mouse' || !items ? null : setTimeout(() => { long = true; cleanup(); openMenu(sx, sy) }, 520)
+        const move = (ev) => { if (Math.hypot(ev.clientX - sx, ev.clientY - sy) > 10) { moved = true; clearTimeout(timer) } }
+        const up = () => { cleanup(); clearTimeout(timer); if (!long && !moved) onZone(seat, zone) }
+        const cancel = () => { cleanup(); clearTimeout(timer) }
+        function cleanup() {
+          removeEventListener('pointermove', move)
+          removeEventListener('pointerup', up)
+          removeEventListener('pointercancel', cancel)
+        }
+        addEventListener('pointermove', move)
+        addEventListener('pointerup', up)
+        addEventListener('pointercancel', cancel)
+      },
+    }
   }
 
   if (err && !row) return <div className="center"><p className="error">{err}</p><button onClick={() => go('/')}>Zurück</button></div>
@@ -376,7 +682,13 @@ export default function Session({ id, view, user }) {
 
   const pw = sessionStorage.getItem('pw:' + id)
   const joinUrl = `${location.origin}${location.pathname}#/join/${row.code}`
-  const ctx = { cards, settings, mySeat, players, bindCard, onZone, drag }
+  const ctx = {
+    cards, settings, mySeat, players, bindCard, bindPile, onZone, drag, aim,
+    onApprove: (b, sig, on) => act((p) => setApproval(p, b, sig, on)),
+    onResolve: (iid, b) => act((p) => resolveStackCard(p, iid, b, cards)),
+  }
+  const mineShow = Object.fromEntries(VIEW_ZONES.map(([k]) => [k, prefs.mine?.[k] ?? true]))
+  const oppShow = Object.fromEntries(VIEW_ZONES.map(([k]) => [k, prefs.opp?.[k] ?? false]))
 
   const zoneModal = () => {
     const own = modal.seat === mySeat
@@ -399,19 +711,22 @@ export default function Session({ id, view, user }) {
     const card = cards[preview.cardId]
     const info = preview.seat === mySeat && mine ? findInst(mine, preview.id) : null
     const zone = info?.zone
+    const isBf = kindOf(card) === 'battlefield'
+    const actions = info ? actionsFor(preview.id).filter((a) => a.key !== 'view' && a.key !== 'marks') : []
     return (
       <div className="modal-bg preview-bg" onClick={() => setPreview(null)}>
         <div className="pv" onClick={(e) => e.stopPropagation()}>
-          {card && <img className="big" src={card.image_url} alt={card.name} onClick={() => setPreview(null)} />}
+          {card && (
+            <div className={'pvimg' + (isBf ? ' bf' : '')} onClick={() => setPreview(null)}>
+              <CardImg className="big" src={card.image_url} alt={card.name} battlefield={isBf} />
+            </div>
+          )}
           {info && (
             <div className="pv-bar">
-              {canHide(card, zone) && (
-                <button className={info.inst.faceDown ? 'primary' : ''} onClick={() => act((p) => toggleFlag(p, preview.id, 'faceDown'))}>
-                  Verdeckt spielen: {info.inst.faceDown ? 'an' : 'aus'}
-                </button>
-              )}
-              {canReveal(info.inst, zone) && <button className="primary" onClick={() => act((p) => toggleFlag(p, preview.id, 'faceDown'))}>Aufdecken</button>}
-              {canTap(card, zone) && <button onClick={() => act((p) => toggleFlag(p, preview.id, 'tapped'))}>{info.inst.tapped ? 'Enttappen' : 'Tappen'}</button>}
+              {actions.map((a) => (
+                <button key={a.key + a.label} className={a.key === 'reveal' ? 'primary' : ''}
+                  onClick={() => { a.run(); if (a.key === 'aim' || a.key === 'give') setPreview(null) }}>{a.label}</button>
+              ))}
               {canMark(card, zone) && <CounterPanel inst={info.inst} {...markFns(preview.id)} />}
             </div>
           )}
@@ -421,9 +736,12 @@ export default function Session({ id, view, user }) {
   }
 
   const hoverInfo = hover && mine ? findInst(mine, hover.id) : null
+  const hoverCard = hoverInfo ? cards[hoverInfo.inst.cardId] : null
   const overlays = (
     <>
       {modal?.type === 'zone' && zoneModal()}
+      {modal?.type === 'look' && mine && <LookModal zone={modal.zone} mine={mine} cards={cards} act={act} onClose={() => setModal(null)} />}
+      {modal?.type === 'view' && <ViewModal prefs={prefs} setPrefs={setPrefs} rot={rot} setRot={setRot} onClose={() => setModal(null)} />}
       {modal?.type === 'settings' && (
         <Modal title="Optionen" onClose={() => setModal(null)}>
           <div className="stack">
@@ -442,10 +760,32 @@ export default function Session({ id, view, user }) {
         </Modal>
       )}
       {preview && previewNode()}
-      {hover && hoverInfo && hoverInfo.zone === hover.zone && !drag && !preview && (
+      {hover && hoverInfo && hoverInfo.zone === hover.zone && !drag && !preview && !aim && (
         <Floating rect={hover.rect} onEnter={keepHover} onLeave={hideHover}>
-          <CounterPanel inst={hoverInfo.inst} {...markFns(hover.id)} />
+          {canMark(hoverCard, hoverInfo.zone) && <CounterPanel inst={hoverInfo.inst} {...markFns(hover.id)} />}
+          <div className="hover-actions">
+            {actionsFor(hover.id).filter((a) => ['aim', 'unaim', 'give'].includes(a.key)).map((a) => (
+              <button key={a.key + a.label} onClick={() => { setHover(null); a.run() }}>{a.label}</button>
+            ))}
+          </div>
         </Floating>
+      )}
+      <ArrowLayer players={players} mySeat={mySeat} onRemove={(from, to) => act((p) => removeTarget(p, from, to))} />
+      {aim && (
+        <div className="aimbar">
+          <span>Ziel wählen: tippe oder klicke die Karte, auf die der Pfeil zeigen soll.</span>
+          <button onClick={() => setAim(null)}>Abbrechen</button>
+        </div>
+      )}
+      {showing && (
+        <div className="modal-bg preview-bg" onClick={() => setShowing(null)}>
+          <div className="pv">
+            <h3>{showing.name} zeigt:</h3>
+            <div className="row" style={{ justifyContent: 'center' }}>
+              {showing.cardIds.map((cid, i) => cards[cid] && <CardImg key={i} className="big" src={cards[cid].image_url} alt={cards[cid].name} battlefield={kindOf(cards[cid]) === 'battlefield'} />)}
+            </div>
+          </div>
+        </div>
       )}
       {menu && <PopMenu menu={menu} onClose={() => setMenu(null)} />}
       {drag && (
@@ -471,6 +811,7 @@ export default function Session({ id, view, user }) {
             ) : <strong>Zuschauer · Code {row.code}</strong>}
             <span className="spacer" />
             {isHost && <button onClick={() => setModal({ type: 'settings' })}>Optionen</button>}
+            <button onClick={() => setModal({ type: 'view' })}>Ansicht</button>
             <button onClick={() => go('/')}>Verlassen</button>
           </div>
           {err && <p className="error pad">{err}</p>}
@@ -492,17 +833,14 @@ export default function Session({ id, view, user }) {
     )
   }
 
-  const fanCw = vw < 700 ? 84 : 112
+  const fanCw = vw < 700 ? 84 : window.innerHeight < 900 ? 94 : 112
   const playing = mine && !mine.setup?.battlefield && !mine.setup?.champion
   const openMore = (e) => {
     const r = e.currentTarget.getBoundingClientRect()
     setMenu({
       x: r.right - 190, y: r.bottom + 4,
       items: [
-        { label: '4 Karten ziehen', run: () => act((p) => draw(p, 4)) },
-        { label: 'Rune ziehen', run: () => act((p) => drawRune(p, 1)) },
-        { label: 'Deck mischen', run: () => act((p) => shuffleZone(p, 'deck')) },
-        { label: 'Runendeck mischen', run: () => act((p) => shuffleZone(p, 'runeDeck')) },
+        { label: 'Ansicht anpassen…', run: () => setModal({ type: 'view' }) },
         { label: 'Neues Deck wählen', run: () => { if (confirm('Neues Deck wählen? Dein Spielstand wird zurückgesetzt.')) commit(null) } },
         ...(isHost ? [{ label: 'Optionen', run: () => setModal({ type: 'settings' }) }] : []),
         { label: 'Session verlassen', run: () => go('/') },
@@ -536,16 +874,18 @@ export default function Session({ id, view, user }) {
                 <strong>{mine.points} Punkte</strong>
                 <button onClick={() => act((p) => addPoints(p, 1))}>+</button>
               </span>
-              <button className="primary" onClick={() => act((p) => draw(p, 1))}>Karte ziehen</button>
               <button onClick={() => act(untapAll)}>Alles enttappen</button>
+              {mine.outbox?.length > 0 && (
+                <button title="Der Mitspieler hat die Karte noch nicht übernommen" onClick={() => act(takeBackGifts)}>Übergabe zurücknehmen ({mine.outbox.length})</button>
+              )}
               <button onClick={openMore}>Mehr ▾</button>
             </div>
 
             {tab === 'table' ? (
               <Table players={players} mySeat={mySeat} />
             ) : (
-              <div className="play-main" style={{ paddingBottom: fanCw * 1.4 + 90 }}>
-                <div className="mine-board"><MyBoard players={players} mySeat={mySeat} /></div>
+              <div className="play-main" style={{ paddingBottom: fanCw * 1.12 + 70 }}>
+                <div className="mine-board"><MyBoard players={players} mySeat={mySeat} mineShow={mineShow} oppShow={oppShow} /></div>
               </div>
             )}
             {tab === 'play' && (
