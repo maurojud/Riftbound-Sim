@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { supabase } from './supabase'
 import { go } from './nav'
-import { Table, MyBoard, CardView, GameCtx } from './Table'
+import { Table, MyBoard, CardView, CounterPanel, GameCtx } from './Table'
 import {
-  ZONES, TARGET_LABEL, DEFAULT_SETTINGS, buildPlayer, moveCard, toggleFlag, draw, drawRune, shuffleZone, untapAll, addPoints,
-  pickBattlefield, pickChampion, targetsFor, canTap, canFlip, analyzeDeck, isValidState,
+  ZONES, DEFAULT_SETTINGS, buildPlayer, moveCard, toggleFlag, draw, drawRune, shuffleZone, untapAll, addPoints,
+  pickBattlefield, pickChampion, targetsFor, canTap, canHide, canReveal, canMark, changeCounter, toggleStatus, clearMarks,
+  analyzeDeck, fixState, findInst,
 } from './game'
 
 export const SETTING_LABELS = {
-  enforceTurns: 'Zugreihenfolge erzwingen (nur wer den Fokus hat, darf spielen)',
   trashTop: 'Oberste Trash-Karte der anderen sichtbar',
   trashInspect: 'Andere dürfen den ganzen Trash ansehen',
   handCount: 'Anzahl der Handkarten der anderen sichtbar',
@@ -29,7 +29,8 @@ function Modal({ title, onClose, children }) {
   )
 }
 
-function ContextMenu({ menu, onClose }) {
+// Kleines Menü (nur für "Mehr"), keine Kartenmenüs mehr: Karten werden per Drag and Drop bewegt
+function PopMenu({ menu, onClose }) {
   const ref = useRef(null)
   const [pos, setPos] = useState({ left: menu.x, top: menu.y })
   useLayoutEffect(() => {
@@ -41,15 +42,26 @@ function ContextMenu({ menu, onClose }) {
   }, [menu])
   return (
     <div className="ctx-bg" onPointerDown={onClose} onContextMenu={(e) => { e.preventDefault(); onClose() }}>
-      <div className="ctxmenu" ref={ref} style={pos} onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
-        {menu.title && <div className="t strong">{menu.title}</div>}
-        {menu.items.map((it, i) =>
-          it.sep ? <div key={i} className="t">{it.sep}</div> : (
-            <button key={i} disabled={it.disabled} onClick={() => { onClose(); it.run() }}>{it.label}</button>
-          ))}
+      <div className="ctxmenu" ref={ref} style={pos} onPointerDown={(e) => e.stopPropagation()}>
+        {menu.items.map((it, i) => (
+          <button key={i} disabled={it.disabled} onClick={() => { onClose(); it.run() }}>{it.label}</button>
+        ))}
       </div>
     </div>
   )
+}
+
+// Schwebendes Feld neben einer Karte (Zähler beim Hovern)
+function Floating({ rect, children, onEnter, onLeave }) {
+  const ref = useRef(null)
+  const [pos, setPos] = useState({ left: rect.left, top: rect.bottom + 6 })
+  useLayoutEffect(() => {
+    const r = ref.current.getBoundingClientRect()
+    let top = rect.bottom + 6
+    if (top + r.height > window.innerHeight - 6) top = Math.max(6, rect.top - r.height - 6)
+    setPos({ left: Math.max(6, Math.min(rect.left, window.innerWidth - r.width - 6)), top })
+  }, [rect])
+  return <div className="floating" ref={ref} style={pos} onPointerEnter={onEnter} onPointerLeave={onLeave}>{children}</div>
 }
 
 function DeckPicker({ cards, onPick }) {
@@ -100,7 +112,8 @@ function Setup({ mine, cards, onBattlefield, onChampion }) {
   )
 }
 
-function HandFan({ hand, cards, cw, bind, drag }) {
+// Handkarten als Fächer. Jede Karte hat einen "Hide"-Schalter: verdeckt gespielte Karten sieht der Gegner nicht.
+export function HandFan({ hand, cards, cw, bind, drag, onHide }) {
   const [w, setW] = useState(window.innerWidth)
   useEffect(() => {
     const f = () => setW(window.innerWidth)
@@ -113,17 +126,26 @@ function HandFan({ hand, cards, cw, bind, drag }) {
   const mid = (n - 1) / 2
   const over = drag?.over === 'hand' && drag.allowed.includes('hand')
   return (
-    <div className={'fan' + (drag ? ' dragging' : '')} style={{ '--cw': cw + 'px', height: cw * 1.4 + 74 }}>
-      <div className={'fan-drop' + (drag && drag.allowed.includes('hand') ? ' dropok' : '') + (over ? ' dropover' : '')} data-drop="hand" />
+    <div className={'fan' + (drag ? ' dragging' : '') + (drag && drag.allowed.includes('hand') ? ' dropok' : '') + (over ? ' dropover' : '')}
+      data-drop="hand" style={{ '--cw': cw + 'px', height: cw * 1.4 + 74 }}>
+      <div className="fan-drop" data-drop="hand" />
       {n === 0 && <span className="muted fan-empty">Keine Handkarten. Tippe auf dein Deck, um zu ziehen.</span>}
       <div className="fan-inner" style={{ width: total }}>
         {hand.map((inst, i) => {
           const off = i - mid
           const rot = off * (n > 6 ? 2.2 : 3.5)
           const dy = off * off * (n > 6 ? 0.9 : 2.5)
+          const hideable = canHide(cards[inst.cardId], 'hand')
           return (
             <div key={inst.id} className="fan-card" style={{ left: step * i, transform: `translateY(${dy}px) rotate(${rot}deg)`, zIndex: i }}>
-              <CardView card={cards[inst.cardId]} inst={inst} handlers={bind(inst)} dim={drag?.id === inst.id} />
+              <CardView card={cards[inst.cardId]} inst={inst} handlers={bind(inst)} dim={drag?.id === inst.id}
+                extra={hideable && (
+                  <button className={'hidechip' + (inst.faceDown ? ' on' : '')} title="Verdeckt spielen"
+                    aria-pressed={!!inst.faceDown} data-hide={inst.id}
+                    onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onHide(inst) }}>
+                    {inst.faceDown ? 'Hidden' : 'Hide'}
+                  </button>
+                )} />
             </div>
           )
         })}
@@ -137,14 +159,16 @@ export default function Session({ id, view, user }) {
   const [members, setMembers] = useState([])
   const [cards, setCards] = useState({})
   const [live, setLive] = useState({})            // per Broadcast empfangene Spielerzustände
-  const [liveTable, setLiveTable] = useState(null) // per Broadcast empfangener Zugstatus
   const [mine, setMine] = useState(undefined)     // undefined = lädt, null = noch kein Deck
   const mineRef = useRef(undefined)
   const chRef = useRef(null)
   const [tab, setTab] = useState('play')
   const [modal, setModal] = useState(null)
-  const [preview, setPreview] = useState(null)
+  const [preview, setPreview] = useState(null)    // { seat, zone, id, cardId }
   const [menu, setMenu] = useState(null)
+  const [hover, setHover] = useState(null)        // { id, zone, rect }
+  const hoverTimer = useRef(null)
+  const lastSecondary = useRef(0)
   const [drag, setDrag] = useState(null)
   const dragRef = useRef(null)
   const ghostRef = useRef(null)
@@ -155,6 +179,11 @@ export default function Session({ id, view, user }) {
     const f = () => setVw(window.innerWidth)
     addEventListener('resize', f)
     return () => removeEventListener('resize', f)
+  }, [])
+  useEffect(() => {
+    const k = (e) => { if (e.key === 'Escape') { setPreview(null); setHover(null) } }
+    addEventListener('keydown', k)
+    return () => removeEventListener('keydown', k)
   }, [])
 
   const me = members.find((m) => m.user_id === user.id)
@@ -180,7 +209,6 @@ export default function Session({ id, view, user }) {
     const ch = supabase
       .channel(`table-${id}`, { config: { broadcast: { self: false } } })
       .on('broadcast', { event: 'seat' }, ({ payload }) => setLive((l) => ({ ...l, [payload.seat]: payload.state })))
-      .on('broadcast', { event: 'table' }, ({ payload }) => setLiveTable(payload))
       .on('broadcast', { event: 'settings' }, ({ payload }) => setRow((r) => r && { ...r, settings: payload }))
       .on('broadcast', { event: 'ping' }, () => { loadRow(); loadMembers() })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions', filter: `id=eq.${id}` }, (p) => p.new && setRow((r) => ({ ...(r || {}), ...p.new })))
@@ -195,8 +223,7 @@ export default function Session({ id, view, user }) {
 
   useEffect(() => {
     if (mySeat && row && mineRef.current === undefined) {
-      const s = row.state?.players?.[mySeat]
-      mineRef.current = isValidState(s) ? s : null
+      mineRef.current = fixState(row.state?.players?.[mySeat])
       setMine(mineRef.current)
     }
   }, [mySeat, row])
@@ -212,48 +239,39 @@ export default function Session({ id, view, user }) {
   }
   const act = (fn) => mineRef.current && commit(fn(mineRef.current))
 
-  async function commitTable(next) {
-    const payload = { ...next, ts: Date.now() }
-    setLiveTable(payload)
-    chRef.current?.send({ type: 'broadcast', event: 'table', payload })
-    const { error } = await supabase.rpc('set_table', { p_session: id, p_table: payload })
-    if (error) setErr(error.message.includes('set_table') ? 'Zugfunktion fehlt in der Datenbank. Bitte supabase/migration-3.sql ausführen.' : error.message)
-  }
-
   const players = members
     .filter((m) => m.seat)
     .sort((a, b) => a.seat - b.seat)
     .map((m) => {
       const s = m.seat === mySeat ? mine : newest(live[m.seat], row?.state?.players?.[m.seat])
-      return { seat: m.seat, name: m.profiles?.username || 'Spieler', state: isValidState(s) ? s : null }
+      return { seat: m.seat, name: m.profiles?.username || 'Spieler', state: fixState(s) }
     })
   const nameOf = (seat) => players.find((p) => p.seat === seat)?.name || '?'
   const stateOf = (seat) => players.find((p) => p.seat === seat)?.state
+  const bfSeats = players.filter((p) => p.state?.zones.battlefield.length).map((p) => p.seat)
 
-  // ───────── Zug und Fokus ─────────
-  const tableRaw = newest(liveTable, row?.state?.table)
-  const turn = tableRaw?.seat ? tableRaw : null
-  const enforce = settings.enforceTurns
-  const canAct = mySeat != null && (!enforce || !turn || turn.focus === mySeat)
-  const seats = players.map((p) => p.seat)
-  const nextSeat = (s) => seats[(seats.indexOf(s) + 1) % seats.length]
-  const canPassTurn = !turn || !enforce || (turn.seat === mySeat && turn.focus === mySeat)
-  const canPassFocus = !!turn && (!enforce || turn.focus === mySeat)
-  const passTurn = () => {
-    if (!turn) return commitTable({ seat: mySeat, focus: mySeat, n: 1 })
-    const s = nextSeat(turn.seat)
-    commitTable({ seat: s, focus: s, n: (turn.n || 1) + 1 })
+  // ───────── Hover-Zähler ─────────
+  const keepHover = () => clearTimeout(hoverTimer.current)
+  const hideHover = () => { clearTimeout(hoverTimer.current); hoverTimer.current = setTimeout(() => setHover(null), 260) }
+  const markFns = (iid) => ({
+    onCounter: (k, d) => act((p) => changeCounter(p, iid, k, d)),
+    onStatus: (k) => act((p) => toggleStatus(p, iid, k)),
+    onClear: () => act((p) => clearMarks(p, iid)),
+  })
+
+  // ───────── Karten-Interaktion ─────────
+  // Linksklick: Vorschau. Rechtsklick oder langes Drücken: Tappen (verdeckte Karte auf dem Tisch: aufdecken). Ziehen: verschieben.
+  function openPreview(seat, zone, inst) {
+    setHover(null)
+    setPreview({ seat, zone, id: inst.id, cardId: inst.cardId })
   }
-  const passFocus = () => commitTable({ ...turn, focus: nextSeat(turn.focus) })
-  const turnText = !turn
-    ? 'Das Spiel hat noch nicht begonnen.'
-    : `Zug ${turn.n || 1}: ${nameOf(turn.seat)} ist am Zug` + (turn.focus !== turn.seat ? `, Fokus bei ${nameOf(turn.focus)}` : '')
-
-  // ───────── Karten-Interaktion: Klick, Rechtsklick/Langdruck, Drag and Drop ─────────
   function startDrag(inst, zone, card, w, x, y) {
-    const allowed = targetsFor(card, zone)
+    const allowed = targetsFor(card, zone, bfSeats, inst)
+    if (!allowed.length) return false
     dragRef.current = { id: inst.id, allowed, over: null, w }
+    setHover(null)
     setDrag({ id: inst.id, card, allowed, over: null, w, x, y })
+    return true
   }
   function moveDrag(x, y) {
     const d = dragRef.current
@@ -276,33 +294,31 @@ export default function Session({ id, view, user }) {
   function bindCard(seat, zone, inst, opts = {}) {
     const card = cards[inst.cardId]
     const own = seat === mySeat
-    const show = () => card && setPreview(card)
-    if (!own) return { onClick: () => { if (!inst.faceDown) show() } }
-    if (!canAct) return { onClick: show }
+    if (!own) return { onClick: () => { if (!inst.faceDown) openPreview(seat, zone, inst) } }
 
-    const click = () => (zone === 'runes' ? act((p) => toggleFlag(p, inst.id, 'tapped')) : show())
-    const openMenu = (x, y) => {
-      const items = []
-      if (canTap(card, zone)) items.push({ label: inst.tapped ? 'Enttappen' : 'Tappen', run: () => act((p) => toggleFlag(p, inst.id, 'tapped')) })
-      if (canFlip(card, zone)) items.push({ label: inst.faceDown ? 'Aufdecken' : 'Verdecken', run: () => act((p) => toggleFlag(p, inst.id, 'faceDown')) })
-      items.push({ label: 'Ansehen', run: show })
-      const targets = targetsFor(card, zone)
-      if (targets.length) {
-        items.push({ sep: 'Verschieben nach' })
-        targets.forEach((t) => items.push({ label: TARGET_LABEL[t], run: () => act((p) => moveCard(p, inst.id, t)) }))
+    const secondary = () => {
+      const now = Date.now()
+      if (now - lastSecondary.current < 700) return // Langdruck löst auf manchen Geräten zusätzlich ein Kontextmenü-Ereignis aus
+      lastSecondary.current = now
+      const cur = findInst(mineRef.current, inst.id)
+      if (!cur) return
+      if (canReveal(cur.inst, cur.zone)) act((p) => toggleFlag(p, inst.id, 'faceDown'))
+      else if (canTap(card, cur.zone)) {
+        act((p) => toggleFlag(p, inst.id, 'tapped'))
+        navigator.vibrate?.(15)
       }
-      setMenu({ x, y, title: card?.name, items })
     }
-    const onContextMenu = (e) => { e.preventDefault(); openMenu(e.clientX, e.clientY) }
+    const onContextMenu = (e) => { e.preventDefault(); secondary() }
     const onPointerDown = (e) => {
-      if (e.button > 0) return
+      if (e.button > 0 || e.ctrlKey) return
       const sx = e.clientX
       const sy = e.clientY
       const w = e.currentTarget.getBoundingClientRect().width
       let dragging = false
       let long = false
       let moved = false
-      const timer = setTimeout(() => { long = true; cleanup(); openMenu(sx, sy) }, 520)
+      // Langes Drücken gilt nur für Touch/Stift (Maus hat den Rechtsklick), sonst würde langsames Klicken tappen
+      const timer = e.pointerType === 'mouse' ? null : setTimeout(() => { long = true; cleanup(); secondary() }, 520)
       const move = (ev) => {
         if (long) return
         if (!dragging) {
@@ -310,8 +326,9 @@ export default function Session({ id, view, user }) {
           moved = true
           clearTimeout(timer)
           if (opts.noDrag) return
-          dragging = true
-          startDrag(inst, zone, card, w, ev.clientX, ev.clientY)
+          dragging = startDrag(inst, zone, card, w, ev.clientX, ev.clientY)
+          if (!dragging) return
+          opts.onDragStart?.()
         }
         moveDrag(ev.clientX, ev.clientY)
       }
@@ -319,7 +336,7 @@ export default function Session({ id, view, user }) {
         cleanup(); clearTimeout(timer)
         if (long) return
         if (dragging) endDrag(ev.clientX, ev.clientY)
-        else if (!moved) click()
+        else if (!moved) openPreview(seat, zone, inst)
       }
       const cancel = () => { cleanup(); clearTimeout(timer); if (dragging) { dragRef.current = null; setDrag(null) } }
       function cleanup() {
@@ -331,13 +348,23 @@ export default function Session({ id, view, user }) {
       addEventListener('pointerup', up)
       addEventListener('pointercancel', cancel)
     }
-    return { onPointerDown, onContextMenu }
+    const h = { onPointerDown, onContextMenu }
+    if (canMark(card, zone)) {
+      h.onPointerEnter = (e) => {
+        if (e.pointerType !== 'mouse' || dragRef.current) return
+        keepHover()
+        const r = e.currentTarget.getBoundingClientRect()
+        setHover({ id: inst.id, zone, rect: { left: r.left, right: r.right, top: r.top, bottom: r.bottom } })
+      }
+      h.onPointerLeave = (e) => { if (e.pointerType === 'mouse') hideHover() }
+    }
+    return h
   }
 
   function onZone(seat, zone) {
     if (seat === mySeat) {
-      if (zone === 'deck' && canAct) return act((p) => draw(p, 1))
-      if (zone === 'runeDeck' && canAct) return act((p) => drawRune(p, 1))
+      if (zone === 'deck') return act((p) => draw(p, 1))
+      if (zone === 'runeDeck') return act((p) => drawRune(p, 1))
       if (zone === 'trash' || zone === 'banish') setModal({ type: 'zone', zone, seat })
       return
     }
@@ -349,7 +376,7 @@ export default function Session({ id, view, user }) {
 
   const pw = sessionStorage.getItem('pw:' + id)
   const joinUrl = `${location.origin}${location.pathname}#/join/${row.code}`
-  const ctx = { cards, settings, mySeat, turn, canAct, bindCard, onZone, drag }
+  const ctx = { cards, settings, mySeat, players, bindCard, onZone, drag }
 
   const zoneModal = () => {
     const own = modal.seat === mySeat
@@ -358,14 +385,42 @@ export default function Session({ id, view, user }) {
       <Modal title={`${ZONES[modal.zone]}${own ? '' : ' von ' + nameOf(modal.seat)} · ${list.length}`} onClose={() => setModal(null)}>
         <div className="zone-grid">
           {[...list].reverse().map((inst) => (
-            <CardView key={inst.id} card={cards[inst.cardId]} inst={inst} reveal={own} small handlers={bindCard(modal.seat, modal.zone, inst, { noDrag: true })} />
+            <CardView key={inst.id} card={cards[inst.cardId]} inst={inst} reveal={own} small
+              handlers={bindCard(modal.seat, modal.zone, inst, { onDragStart: () => setModal(null) })} />
           ))}
         </div>
-        {list.length > 0 && <p className="muted small">Neueste Karte zuerst. Linksklick vergrößert{own ? ', Rechtsklick (oder lange drücken) öffnet Optionen' : ''}.</p>}
+        {list.length > 0 && <p className="muted small">Neueste Karte zuerst. Klick vergrößert{own ? ', ziehen verschiebt die Karte (das Fenster schließt sich dabei)' : ''}.</p>}
       </Modal>
     )
   }
 
+  // ───────── Vorschau mit dunklem Hintergrund ─────────
+  const previewNode = () => {
+    const card = cards[preview.cardId]
+    const info = preview.seat === mySeat && mine ? findInst(mine, preview.id) : null
+    const zone = info?.zone
+    return (
+      <div className="modal-bg preview-bg" onClick={() => setPreview(null)}>
+        <div className="pv" onClick={(e) => e.stopPropagation()}>
+          {card && <img className="big" src={card.image_url} alt={card.name} onClick={() => setPreview(null)} />}
+          {info && (
+            <div className="pv-bar">
+              {canHide(card, zone) && (
+                <button className={info.inst.faceDown ? 'primary' : ''} onClick={() => act((p) => toggleFlag(p, preview.id, 'faceDown'))}>
+                  Verdeckt spielen: {info.inst.faceDown ? 'an' : 'aus'}
+                </button>
+              )}
+              {canReveal(info.inst, zone) && <button className="primary" onClick={() => act((p) => toggleFlag(p, preview.id, 'faceDown'))}>Aufdecken</button>}
+              {canTap(card, zone) && <button onClick={() => act((p) => toggleFlag(p, preview.id, 'tapped'))}>{info.inst.tapped ? 'Enttappen' : 'Tappen'}</button>}
+              {canMark(card, zone) && <CounterPanel inst={info.inst} {...markFns(preview.id)} />}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  const hoverInfo = hover && mine ? findInst(mine, hover.id) : null
   const overlays = (
     <>
       {modal?.type === 'zone' && zoneModal()}
@@ -386,12 +441,13 @@ export default function Session({ id, view, user }) {
           </div>
         </Modal>
       )}
-      {preview && (
-        <div className="modal-bg preview-bg" onClick={() => setPreview(null)}>
-          <img className="big" src={preview.image_url} alt={preview.name} />
-        </div>
+      {preview && previewNode()}
+      {hover && hoverInfo && hoverInfo.zone === hover.zone && !drag && !preview && (
+        <Floating rect={hover.rect} onEnter={keepHover} onLeave={hideHover}>
+          <CounterPanel inst={hoverInfo.inst} {...markFns(hover.id)} />
+        </Floating>
       )}
-      {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {menu && <PopMenu menu={menu} onClose={() => setMenu(null)} />}
       {drag && (
         <div className="ghost" ref={ghostRef} style={{ width: drag.w }}>
           <img src={drag.card.image_url} alt="" draggable={false} />
@@ -413,7 +469,6 @@ export default function Session({ id, view, user }) {
                 {players.length < 2 && <div className="muted joinurl">{joinUrl}</div>}
               </>
             ) : <strong>Zuschauer · Code {row.code}</strong>}
-            <div className="turnchip">{turnText}</div>
             <span className="spacer" />
             {isHost && <button onClick={() => setModal({ type: 'settings' })}>Optionen</button>}
             <button onClick={() => go('/')}>Verlassen</button>
@@ -441,16 +496,18 @@ export default function Session({ id, view, user }) {
   const playing = mine && !mine.setup?.battlefield && !mine.setup?.champion
   const openMore = (e) => {
     const r = e.currentTarget.getBoundingClientRect()
-    const items = [
-      { label: '4 Karten ziehen', disabled: !canAct, run: () => act((p) => draw(p, 4)) },
-      { label: 'Rune ziehen', disabled: !canAct, run: () => act((p) => drawRune(p, 1)) },
-      { label: 'Deck mischen', disabled: !canAct, run: () => act((p) => shuffleZone(p, 'deck')) },
-      { label: 'Runendeck mischen', disabled: !canAct, run: () => act((p) => shuffleZone(p, 'runeDeck')) },
-      { label: 'Neues Deck wählen', run: () => { if (confirm('Neues Deck wählen? Dein Spielstand wird zurückgesetzt.')) commit(null) } },
-      ...(isHost ? [{ label: 'Optionen', run: () => setModal({ type: 'settings' }) }] : []),
-      { label: 'Session verlassen', run: () => go('/') },
-    ]
-    setMenu({ x: r.right - 190, y: r.bottom + 4, items })
+    setMenu({
+      x: r.right - 190, y: r.bottom + 4,
+      items: [
+        { label: '4 Karten ziehen', run: () => act((p) => draw(p, 4)) },
+        { label: 'Rune ziehen', run: () => act((p) => drawRune(p, 1)) },
+        { label: 'Deck mischen', run: () => act((p) => shuffleZone(p, 'deck')) },
+        { label: 'Runendeck mischen', run: () => act((p) => shuffleZone(p, 'runeDeck')) },
+        { label: 'Neues Deck wählen', run: () => { if (confirm('Neues Deck wählen? Dein Spielstand wird zurückgesetzt.')) commit(null) } },
+        ...(isHost ? [{ label: 'Optionen', run: () => setModal({ type: 'settings' }) }] : []),
+        { label: 'Session verlassen', run: () => go('/') },
+      ],
+    })
   }
 
   return (
@@ -474,33 +531,27 @@ export default function Session({ id, view, user }) {
          ) : (
           <>
             <div className="toolbar">
-              <button className="primary" disabled={!canPassTurn} onClick={passTurn}>{turn ? 'Zug beenden' : 'Zug starten'}</button>
-              <button disabled={!canPassFocus} onClick={passFocus}>Fokus abgeben</button>
               <span className="points">
-                <button onClick={() => act((p) => addPoints(p, -1))} disabled={!canAct}>−</button>
+                <button onClick={() => act((p) => addPoints(p, -1))}>−</button>
                 <strong>{mine.points} Punkte</strong>
-                <button onClick={() => act((p) => addPoints(p, 1))} disabled={!canAct}>+</button>
+                <button onClick={() => act((p) => addPoints(p, 1))}>+</button>
               </span>
-              <button disabled={!canAct} onClick={() => act((p) => draw(p, 1))}>Karte ziehen</button>
-              <button disabled={!canAct} onClick={() => act(untapAll)}>Alles enttappen</button>
+              <button className="primary" onClick={() => act((p) => draw(p, 1))}>Karte ziehen</button>
+              <button onClick={() => act(untapAll)}>Alles enttappen</button>
               <button onClick={openMore}>Mehr ▾</button>
-            </div>
-            <div className={'turnbar' + (enforce && turn && !canAct ? ' waiting' : '')}>
-              {turnText}{enforce && turn && !canAct ? ' · Du bist noch nicht dran.' : ''}
             </div>
 
             {tab === 'table' ? (
               <Table players={players} mySeat={mySeat} />
             ) : (
               <div className="play-main" style={{ paddingBottom: fanCw * 1.4 + 90 }}>
-                <div className="mine-board">
-                  <MyBoard player={{ seat: mySeat, name: 'Du', state: mine }} />
-                </div>
+                <div className="mine-board"><MyBoard players={players} mySeat={mySeat} /></div>
               </div>
             )}
             {tab === 'play' && (
               <HandFan hand={mine.zones.hand} cards={cards} cw={fanCw} drag={drag}
-                bind={(inst) => bindCard(mySeat, 'hand', inst)} />
+                bind={(inst) => bindCard(mySeat, 'hand', inst)}
+                onHide={(inst) => act((p) => toggleFlag(p, inst.id, 'faceDown'))} />
             )}
           </>
          )}
