@@ -3,22 +3,42 @@ import { KINDS, COLORS, allowsSecondColor } from './game'
 // Erkennt Dateinamen wie SFD-042.webp, ogn_011_298.png oder "OGN 011": Set-Kürzel + Kartennummer.
 // Findet in einem Text wie "OGN-023*", "ogn 023S" oder "Name OGN-023a" den Code. Zeichen dahinter werden ignoriert.
 export function extractCode(text, strict = false) {
-  const re = strict ? /(?:^|[^A-Za-z])([A-Za-z]{2,4})-0*(\d{1,3})/ : /(?:^|[^A-Za-z])([A-Za-z]{2,4})[-_\s]?0*(\d{1,3})/
-  const m = String(text || '').match(re)
-  return m ? { set: m[1].toLowerCase(), num: m[2].padStart(3, '0') } : null
+  const t = String(text || '')
+  const fmt = (set, rest) => {
+    const m = rest.replace(/\s+/g, '').match(/^(?:(T|SP)(\d{1,3})|0*(\d{1,3}))$/i)
+    if (!m) return null
+    return { set: set.toLowerCase(), num: m[1] ? m[1].toLowerCase() + m[2] : m[3].padStart(3, '0') }
+  }
+  const re = strict
+    ? /(?:^|[^A-Za-z])([A-Za-z]{2,4})-((?:T|SP)?\s?0*\d{1,3})/i
+    : /(?:^|[^A-Za-z])([A-Za-z]{2,4})[-_\s]?((?:T|SP)\s?0*\d{1,3}|0*\d{1,3})/i
+  let m = t.match(re)
+  // Name besteht nur aus einem Code wie "OGN 121a", "UNL T06" oder "VEN SP5": auch ohne Bindestrich erkennen
+  if (!m && strict === 'name') m = t.match(/^\s*([A-Za-z]{2,4})[\s_]((?:T|SP)?\s?0*\d{1,3})[A-Za-z*]?\s*$/i)
+  return m ? fmt(m[1], m[2]) : null
 }
 
 export function parseSetNumber(filename) {
   const base = filename.replace(/\.[^.]+$/, '')
-  const m = base.match(/^([a-z]{2,4})[\s_-]*0*(\d{1,3})(?:[\s_-]|$)/i)
+  const m = base.match(/^([a-z]{2,4})[\s_-]*(T|SP)?\s?0*(\d{1,3})[a-z*]?(?:[\s_-]|$)/i)
   if (!m) return null
-  return { set: m[1].toLowerCase(), num: m[2].padStart(3, '0') }
+  return { set: m[1].toLowerCase(), num: m[2] ? m[2].toLowerCase() + m[3] : m[3].padStart(3, '0') }
 }
 
 const cache = new Map()
 
 // Fragt die offene Riftcodex-Datenbank (api.riftcodex.com, kein Schlüssel nötig) nach einer Karte.
+// Token (T06) und Promos (SP5) heißen in der Datenbank evtl. mit anderer Nullen-Schreibweise: mehrere Varianten probieren.
 export async function fetchCardInfo(set, num) {
+  const m = String(num).match(/^(t|sp)(\d+)$/)
+  const nums = m ? [...new Set([num, m[1] + m[2].padStart(2, '0'), m[1] + m[2].padStart(3, '0'), m[1] + Number(m[2])])] : [num]
+  for (const n of nums) {
+    const c = await fetchOne(set, n)
+    if (c) return c
+  }
+  return null
+}
+async function fetchOne(set, num) {
   const key = `${set}-${num}`
   if (cache.has(key)) return cache.get(key)
   const res = await fetch(`https://api.riftcodex.com/cards/riftbound/${key}`)

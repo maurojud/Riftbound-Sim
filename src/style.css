@@ -240,7 +240,7 @@ h1 { font-size: 2.2rem; font-weight: 800; }
 .fan.dragging .fan-drop { pointer-events: auto; }
 .fan-card:hover { z-index: 200 !important; }
 .fan-card .card { transition: transform .15s ease; }
-.fan-card:hover .card { transform: translateY(-34px) scale(1.08); }
+.fan-card:hover .card { box-shadow: 0 0 0 2px var(--gold), 0 0 22px 6px #f2c14e99; filter: brightness(1.14); }
 
 /* Kontextmenü, Vorschau, Ghost */
 .ctx-bg { position: fixed; inset: 0; z-index: 60; }
@@ -456,7 +456,7 @@ fieldset { border-color: #2c3a4d; border-radius: 16px; }
 .myboard { gap: 6px; }
 .fan { background: linear-gradient(to top, #0a0e14f2 30%, #0a0e1400); }
 .fan-card { bottom: calc(var(--cw) * -.3); }
-.fan-card:hover .card { transform: translateY(-64px) scale(1.08); }
+.fan-card:hover .card { box-shadow: 0 0 0 2px var(--gold), 0 0 22px 6px #f2c14e99; filter: brightness(1.14); }
 
 /* ───────── v7: Spielmatte als Raster, gleich große Zonen, gemeinsamer Stack rechts, Equipment ───────── */
 .mat { --fw: calc(var(--cw) * var(--xs, .66) + 20px); display: grid; gap: 6px 8px; align-items: stretch;
@@ -508,7 +508,7 @@ fieldset { border-color: #2c3a4d; border-radius: 16px; }
 @media (max-width: 700px) { .stackcol { width: calc(var(--cw) * .75 + 18px); padding: 6px 4px; } }
 
 .fan-card .playchip { position: absolute; top: 3px; right: 3px; z-index: 4; min-height: 0; padding: 0 8px; font-size: .9rem; line-height: 1.5; border-radius: 999px; background: var(--gold); color: #1b1608; border-color: var(--gold); font-weight: 800; }
-.fan-card:hover .playchip { transform: translateY(-64px) scale(1.08); }
+
 .pick.blocked { opacity: .35; }
 .pick.blocked img { filter: grayscale(.8); }
 
@@ -524,3 +524,23 @@ fieldset { border-color: #2c3a4d; border-radius: 16px; }
 .imgbtn { cursor: zoom-in; }
 .imgbtn img { width: 100%; }
 .admin-card .nums input { width: 100%; }
+
+/* ───────── v8: größere, einheitliche Karten; größerer Stack; Hand ohne Hochspringen ───────── */
+.mine-board { --cw: clamp(66px, 7.6vw, 104px); --xs: 1; }
+.mine-board .bfrow { --cw: inherit; --xs: inherit; }
+@media (max-width: 700px) { .mine-board { --cw: 52px; --xs: .85; } }
+.stackcol { width: calc(var(--cw) + 30px); }
+.stackcol .card.xs { --w: var(--cw); }
+.tvwrap .stackcol .card.xs { --w: calc(var(--cw) * 1.1); }
+.tvwrap .stackcol { width: calc(var(--cw) * 1.1 + 30px); }
+.tvwrap, .tvtable { --xs: .72; }
+@media (max-width: 700px) { .stackcol { width: calc(var(--cw) + 16px); } }
+.fan-card .card, .fan-card:hover .card { transform: none; }
+.fan-card:hover .card { outline: 2px solid var(--gold); }
+.missingbox { margin-top: 10px; padding: 8px 10px; border: 1px solid #e5584a88; background: #e5584a14; border-radius: 12px; font-size: .86rem; }
+.missingbox ul { margin: 6px 0; padding-left: 18px; max-height: 220px; overflow: auto; }
+.sortbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sortchip { display: inline-flex; gap: 4px; align-items: center; padding: 2px 4px 2px 8px; border-radius: 999px; background: #ffffff10; border: 1px solid var(--line); }
+.sortchip select { min-height: 30px; padding: 2px 6px; }
+.sortchip button { min-height: 28px; min-width: 28px; padding: 0 6px; border-radius: 999px; }
+.tvwrap, .tvtable { --cw: clamp(44px, min(calc((100vh - 84px) / 12.9), 5.2vw), 120px); --xs: .85; }

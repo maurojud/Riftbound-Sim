@@ -551,6 +551,7 @@ export function parseDeckList(text, allCards) {
     byName.get(key).push(c)
   }
   const SECTIONS = { legend: 'legend', champion: 'champion', 'main deck': 'main', maindeck: 'main', main: 'main', deck: 'main', battlefields: 'battlefield', battlefield: 'battlefield', runes: 'rune', rune: 'rune', sideboard: 'side', side: 'side' }
+  const LABEL = { legend: 'Legend', champion: 'Champion', main: 'MainDeck', battlefield: 'Battlefields', rune: 'Runes' }
   const KIND_OF = { legend: ['legend'], champion: null, main: null, battlefield: ['battlefield'], rune: ['rune'] }
   const qty = {}
   const missing = []
@@ -568,6 +569,11 @@ export function parseDeckList(text, allCards) {
     const name = m[2].trim()
     if (section === 'side') { side += n; continue }
     let pool = byName.get(norm(name)) || []
+    if (!pool.length) { // unscharf: Name steht am Anfang eines einzigen Kartennamens (oder umgekehrt)
+      const nn = norm(name)
+      const hits = allCards.filter((c) => { const k = norm(c.name); return nn.length >= 4 && (k.startsWith(nn) || nn.startsWith(k)) })
+      if (new Set(hits.map((c) => norm(c.name))).size === 1) pool = hits
+    }
     if (section === 'rune' && !pool.length) {
       // "6 Calm Rune": über die Farbe suchen
       const col = COLORS.find((c) => norm(name).replace(/\s*runes?$/, '') === c.toLowerCase())
@@ -577,7 +583,8 @@ export function parseDeckList(text, allCards) {
     let found
     if (want) found = pool.find((c) => want.includes(kindOf(c)))
     else found = pool.find((c) => !['legend', 'battlefield', 'rune'].includes(kindOf(c)))
-    if (!found) { missing.push(`${n} ${name}`); continue }
+    if (!found && pool.length) found = pool[0] // richtiger Name, aber andere Art als der Abschnitt vermuten lässt
+    if (!found) { missing.push(`${n}× ${name} (${LABEL[section] || section})`); continue }
     qty[found.id] = (qty[found.id] || 0) + n
     if (section === 'champion') champion = found.id
   }

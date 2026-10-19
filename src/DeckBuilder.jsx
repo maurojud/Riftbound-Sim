@@ -5,6 +5,38 @@ import CardImg from './CardImg'
 
 export const COLOR_HEX = { Fury: '#e5584a', Calm: '#4fb98a', Mind: '#4f94e8', Body: '#f0953a', Chaos: '#a463e0', Order: '#e8c547' }
 const KIND_FILTERS = [...KINDS, 'Signature']
+// Sortierkriterien: lassen sich beliebig stapeln (Prio 1, Prio 2, …)
+const setOf = (c) => (c.code || '').split('-')[0] || ''
+const numOf = (c) => parseInt((c.code || '').split('-')[1] || '', 10)
+const SORT_KEYS = {
+  name: ['Name', (c) => c.name.toLowerCase()],
+  energy: ['Energy', (c) => c.energy],
+  might: ['Might', (c) => c.might],
+  power: ['Power', (c) => c.power],
+  color: ['Farbe', (c) => { const i = COLORS.indexOf(c.color); return i < 0 ? null : i * 10 + (COLORS.indexOf(c.color2) + 1) }],
+  kind: ['Art', (c) => { const i = KINDS.indexOf(c.kind); return i < 0 ? null : i }],
+  signature: ['Signature', (c) => (c.signature ? 0 : 1)],
+  set: ['Set', (c) => setOf(c) || null],
+  number: ['Nummer', (c) => (Number.isNaN(numOf(c)) ? null : numOf(c))],
+}
+const cmpVals = (a, b) => (typeof a === 'string' || typeof b === 'string' ? String(a).localeCompare(String(b)) : a - b)
+function sortCards(list, sorts) {
+  if (!sorts.length) return list
+  return [...list].sort((x, y) => {
+    for (const s of sorts) {
+      const f = SORT_KEYS[s.key]?.[1]
+      if (!f) continue
+      const a = f(x), b = f(y)
+      const an = a === null || a === undefined, bn = b === null || b === undefined
+      if (an && bn) continue
+      if (an) return 1   // Karten ohne Wert immer ans Ende
+      if (bn) return -1
+      const d = cmpVals(a, b)
+      if (d) return s.dir === 'desc' ? -d : d
+    }
+    return 0
+  })
+}
 
 export default function DeckBuilder() {
   const [cards, setCards] = useState([])
@@ -18,6 +50,9 @@ export default function DeckBuilder() {
   const [champ, setChamp] = useState(null)     // gewählter Champion (kommt beim Spielstart direkt in die Champion-Zone)
   const [listText, setListText] = useState('')
   const [msg, setMsg] = useState('')
+  const [missing, setMissing] = useState([])    // beim Import nicht gefundene Karten
+  const [sorts, setSorts] = useState(() => { try { return JSON.parse(localStorage.getItem('rt:sorts')) || [] } catch { return [] } })
+  useEffect(() => { try { localStorage.setItem('rt:sorts', JSON.stringify(sorts)) } catch { /* egal */ } }, [sorts])
 
   const loadDecks = async () => {
     const { data } = await supabase.from('decks').select('*').order('created_at', { ascending: false })
@@ -36,11 +71,12 @@ export default function DeckBuilder() {
   useEffect(() => { setColors(allowed) }, [allowedKey]) // eslint-disable-line
   // Farbfilter trifft beide Farben einer Karte (zweifarbige Legends und Signature-Karten erscheinen bei beiden Farben)
   // Filter: nichts gewählt = alles; sonst genügt es, wenn die Karte mindestens eine der gewählten Farben bzw. Arten hat.
-  const shown = cards.filter(
+  const shown0 = cards.filter(
     (c) => c.name.toLowerCase().includes(q.toLowerCase())
       && (!kinds.length || kinds.some((k) => (k === 'Signature' ? !!c.signature : c.kind === k)))
       && (!colors.length || colorsOf(c).some((x) => colors.includes(x))),
   )
+  const shown = useMemo(() => sortCards(shown0, sorts), [shown0, sorts]) // eslint-disable-line
   const toggle = (set, v) => set((cur) => (cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]))
 
   function add(card) {
@@ -69,12 +105,13 @@ export default function DeckBuilder() {
   // Deckliste einlesen: Abschnitte Legend / Champion / MainDeck / Battlefields / Runes, Zeilen wie "3 Kartenname"
   function importList() {
     const r = parseDeckList(listText, cards)
+    setMissing(r.missing)
     if (!Object.keys(r.qty).length) return setMsg('In der Liste wurde keine bekannte Karte gefunden.')
     setQty(r.qty)
     setChamp(r.champion)
     const bits = [`${Object.values(r.qty).reduce((a, b) => a + b, 0)} Karten übernommen`]
     if (r.side) bits.push(`Sideboard (${r.side} Karten) wird nicht gespielt und ignoriert`)
-    if (r.missing.length) bits.push(`nicht gefunden: ${r.missing.join('; ')}`)
+    if (r.missing.length) bits.push(`${r.missing.length} Karten nicht gefunden (siehe Liste unten), bitte von Hand hinzufügen`)
     setMsg(bits.join('. ') + '.')
   }
 
@@ -155,6 +192,13 @@ export default function DeckBuilder() {
           {deckId && <button className="danger" onClick={del}>Löschen</button>}
         </div>
         {msg && <p className="warn">{msg}</p>}
+        {missing.length > 0 && (
+          <div className="missingbox" role="alert">
+            <b>Nicht gefunden ({missing.length}) – bitte manuell hinzufügen:</b>
+            <ul>{missing.map((m, i) => <li key={i}>{m}</li>)}</ul>
+            <button className="link" onClick={() => setMissing([])}>Liste ausblenden</button>
+          </div>
+        )}
       </aside>
 
       <section>
@@ -172,6 +216,22 @@ export default function DeckBuilder() {
             {KIND_FILTERS.map((k) => (
               <button key={k} className={'fbtn' + (kinds.includes(k) ? ' on' : '')} aria-pressed={kinds.includes(k)} onClick={() => toggle(setKinds, k)}>{k}</button>
             ))}
+          </div>
+          <div className="sortbar">
+            <span className="muted">Sortieren:</span>
+            {sorts.map((s, i) => (
+              <span key={i} className="sortchip">
+                <b>{i + 1}.</b>
+                <select value={s.key} aria-label={`Sortierung ${i + 1}`} onChange={(e) => setSorts((cur) => cur.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))}>
+                  {Object.entries(SORT_KEYS).map(([k, [label]]) => <option key={k} value={k}>{label}</option>)}
+                </select>
+                <button title="Richtung wechseln" onClick={() => setSorts((cur) => cur.map((x, j) => (j === i ? { ...x, dir: x.dir === 'asc' ? 'desc' : 'asc' } : x)))}>{s.dir === 'asc' ? '↑' : '↓'}</button>
+                <button title="Entfernen" onClick={() => setSorts((cur) => cur.filter((_, j) => j !== i))}>×</button>
+              </span>
+            ))}
+            {sorts.length < Object.keys(SORT_KEYS).length && (
+              <button onClick={() => setSorts((cur) => [...cur, { key: Object.keys(SORT_KEYS).find((k) => !cur.some((x) => x.key === k)), dir: 'asc' }])}>+ Sortierung</button>
+            )}
           </div>
           {(colors.length > 0 || kinds.length > 0) && (
             <button className="link" onClick={() => { setColors([]); setKinds([]) }}>Filter zurücksetzen · {shown.length} Karten</button>

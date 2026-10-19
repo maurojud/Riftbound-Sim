@@ -11,7 +11,7 @@ const numOrNull = (v) => (v === '' || v === null || v === undefined || Number.is
 
 export default function Admin({ user }) {
   const [cards, setCards] = useState([])
-  const [kind, setKind] = useState('Unit')
+  const [kind, setKind] = useState('Other')
   const [color, setColor] = useState('')
   const [queue, setQueue] = useState([])
   const [msg, setMsg] = useState('')
@@ -22,6 +22,7 @@ export default function Admin({ user }) {
   const [fmode, setFmode] = useState('all')       // all | nocode | badname | novalues
   const [sel, setSel] = useState([])              // ausgewählte Karten-IDs
   const [recheckMode, setRecheckMode] = useState('fill')
+  const [pfilter, setPfilter] = useState('all') // Vorschau-Filter: all | other | nocolor | notfound
   const [big, setBig] = useState(null)            // Karte, die gerade vergrößert wird
 
   const load = async () => {
@@ -122,7 +123,7 @@ export default function Admin({ user }) {
     for (let i = 0; i < list.length; i++) {
       const c = list[i]
       setMsg(`Prüfe ${i + 1} von ${list.length}: ${c.name}…`)
-      const sn = extractCode(c.code || '') || extractCode(c.name, true)
+      const sn = extractCode(c.code || '') || extractCode(c.name, 'name')
       if (!sn) { res.nocode.push(c.name); continue }
       try {
         const info = await fetchCardInfo(sn.set, sn.num)
@@ -164,7 +165,7 @@ export default function Admin({ user }) {
 
   const shown = cards.filter((c) => (c.name + ' ' + (c.code || '')).toLowerCase().includes(q.toLowerCase())
     && (!fkind || (fkind === 'Signature' ? !!c.signature : c.kind === fkind))
-    && (!fcolor || colorsOfCard(c).includes(fcolor))
+    && (!fcolor || (fcolor === '__none' ? !colorsOfCard(c).length : colorsOfCard(c).includes(fcolor)))
     && (fmode === 'all' || (fmode === 'nocode' && !c.code) || (fmode === 'badname' && BAD_NAME.test(c.name))
       || (fmode === 'novalues' && c.energy == null && c.might == null && c.power == null)))
   const allSel = shown.length > 0 && shown.every((c) => sel.includes(c.id))
@@ -200,10 +201,19 @@ export default function Admin({ user }) {
 
         {rows.length > 0 && (
           <>
+            <div className="row filterbar">
+              <select value={pfilter} onChange={(e) => setPfilter(e.target.value)} aria-label="Vorschau filtern">
+                <option value="all">Vorschau: alle ({rows.length})</option>
+                <option value="other">Nur Art „Other“ ({rows.filter((r) => r.kind === 'Other').length})</option>
+                <option value="nocolor">Nur farblos ({rows.filter((r) => !r.color).length})</option>
+                <option value="notfound">Nur nicht in der Datenbank gefunden</option>
+              </select>
+            </div>
             <table className="preview">
               <thead><tr><th>Bild</th><th>Bilddatei</th><th>Kartenname</th><th>Code / Dateiname (z. B. OGN-001)</th><th>Art</th><th>Signature</th><th>Farbe</th><th>Farbe 2</th><th>Energy / Might / Power</th><th>Status</th></tr></thead>
               <tbody>
-                {rows.map((r) => {
+                {rows.filter((r) => pfilter === 'all' || (pfilter === 'other' && r.kind === 'Other') || (pfilter === 'nocolor' && !r.color)
+                  || (pfilter === 'notfound' && (r.status === 'notfound' || r.status === 'error' || r.status === 'name'))).map((r) => {
                   const two = allowsSecondColor(r.kind, r.signature)
                   return (
                     <tr key={r.key} className={r.dup ? 'skip' : ''}>
@@ -285,6 +295,7 @@ export default function Admin({ user }) {
           </select>
           <select value={fcolor} onChange={(e) => setFcolor(e.target.value)}>
             <option value="">Alle Farben</option>
+            <option value="__none">Farblos (ohne Farbe)</option>
             {COLORS.map((k) => <option key={k}>{k}</option>)}
           </select>
           <select value={fmode} onChange={(e) => setFmode(e.target.value)}>
