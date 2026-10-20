@@ -39,6 +39,13 @@ create table public.cards (
   color2 text,                       -- zweite Farbe, nur für Legends und Signature-Karten
   signature boolean not null default false,  -- Signature-Karte (z. B. Signature Spell)
   code text,                         -- Set-Nummer, z. B. SFD-042
+  energy integer,                    -- Kosten
+  might integer,
+  power integer,
+  power_colors text,                 -- Farben der Power-Kosten, z. B. Fury,Mind
+  token_type text,                   -- Unit | Gear | Spell | Battlefield | Other (nur bei Art Token)
+  bf_mode text,                      -- extra (3. Battlefield) | overlay (über ein Battlefield gelegt)
+  enters_ready boolean,              -- true = kommt bereit, false = getappt, leer = Standard
   created_at timestamptz not null default now()
 );
 alter table public.cards enable row level security;
