@@ -8,7 +8,7 @@ import {
   pickBattlefield, pickChampion, targetsFor, canTap, canHide, canReveal, canMark, canAim, canGive, changeCounter, toggleStatus, clearMarks,
   analyzeDeck, fixState, findInst, kindOf, toggleTarget, removeTarget, clearTargets, giveCard, acceptGift, dropGift, takeBackGifts,
   setApproval, resolveEntry, showCards, playToStack, addFx, attachCard, detachCard, changePeek,
-  costOf, planPayment, applyPayment, moveAuto, spawnTokens, overlayBattlefield, setPoints, drawBottom, drawRuneBottom,
+  FLOAT_CARD, legendDiscount, exhaust, costOf, planPayment, applyPayment, moveAuto, spawnTokens, overlayBattlefield, setPoints, drawBottom, drawRuneBottom,
 } from './game'
 
 export const SETTING_LABELS = {
@@ -47,9 +47,9 @@ const zoneAt = (x, y, allowed) => {
   return hand
 }
 
-function Modal({ title, onClose, children }) {
+function Modal({ title, onClose, children, top }) {
   return (
-    <div className="modal-bg" onClick={onClose}>
+    <div className={'modal-bg' + (top ? ' top' : '')} onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head"><h3>{title}</h3><button onClick={onClose}>Schließen</button></div>
         {children}
@@ -314,7 +314,7 @@ function TokenModal({ tokens, onSpawn, onClose }) {
   const typeOf = (c) => TOKEN_ORDER.find((t) => t.toLowerCase() === String(c.token_type || '').toLowerCase()) || 'Ohne Typ'
   const groups = [...TOKEN_ORDER, 'Ohne Typ'].map((t) => [t, tokens.filter((c) => typeOf(c) === t)]).filter(([, l]) => l.length)
   return (
-    <Modal title="Tokens spielen" onClose={onClose}>
+    <Modal title="Tokens spielen" onClose={onClose} top>
       {tokens.length === 0 && <p className="muted">Noch keine Token-Karten vorhanden. Im Karten-Verwalter die Art „Token“ setzen.</p>}
       {groups.map(([type, list]) => (
         <section key={type}>
@@ -450,7 +450,7 @@ export default function Session({ id, view, user }) {
 
   useEffect(() => {
     loadRow(); loadMembers()
-    fetchAllCards().then(({ data }) => setCards(Object.fromEntries((data || []).map((c) => [c.id, c]))))
+    fetchAllCards().then(({ data }) => setCards({ ...Object.fromEntries((data || []).map((c) => [c.id, c])), [FLOAT_CARD.id]: FLOAT_CARD }))
     const ch = supabase
       .channel(`table-${id}`, { config: { broadcast: { self: false } } })
       .on('broadcast', { event: 'seat' }, ({ payload }) => setLive((l) => ({ ...l, [payload.seat]: payload.state })))
@@ -612,21 +612,37 @@ export default function Session({ id, view, user }) {
     const card = cur && cards[cur.inst.cardId]
     const play = !!cur && ['hand', 'champion'].includes(cur.zone) && (to === 'stack' || to === 'base' || to.startsWith('bf:')) && !cur.inst.faceDown && !cur.inst.token
     if (!play || !auto.pay) return act(run)
-    const cost = costOf(card)
+    let cost = costOf(card)
+    let saved = null
+    if (cost && auto.legend !== false) {
+      const legendInst = mineRef.current.zones.legend[0]
+      ;({ cost, saved } = legendDiscount(cards[legendInst?.cardId], card, cost))
+      if (saved) {
+        if (saved.tap && legendInst.tapped) { // bereits getappte Legend kann nicht noch einmal bezahlen
+          cost = costOf(card); saved = null
+          say('Die Legend ist schon getappt und übernimmt deshalb keine Kosten.')
+        } else saved = { ...saved, legendId: legendInst.id }
+      }
+    }
     if (!cost) {
       if (card && !['rune', 'legend', 'battlefield'].includes(kindOf(card))) say(`Kosten von „${card.name}“ sind nicht hinterlegt, deshalb nicht automatisch bezahlt.`)
       return act(run)
     }
     const plan = planPayment(mineRef.current, cost, cards)
-    if (plan.choice) return setPayAsk({ cost, choice: plan.choice, run, name: card.name })
-    return finishPay(plan, run, card.name)
+    if (plan.choice) return setPayAsk({ cost, choice: plan.choice, run, name: card.name, saved })
+    return finishPay(plan, run, card.name, saved)
   }
-  function finishPay(plan, run, name) {
-    act((p) => run(applyPayment(p, plan)))
+  function finishPay(plan, run, name, saved) {
+    act((p) => { const n = run(applyPayment(p, plan)); return saved?.tap && saved.legendId ? exhaust(n, saved.legendId) : n })
+    const msgs = []
+    if (saved) msgs.push(`Die Legend übernimmt ${[saved.energy && `${saved.energy} Energy`, saved.power && `${saved.power} Power`].filter(Boolean).join(' und ')}${saved.tap ? ' und wird getappt' : ''}.`)
+    if (plan.floats > 0) msgs.push(`Es gab zu wenige getappte Runen in der richtigen Farbe: ${plan.floats} bereite Rune${plan.floats > 1 ? 'n' : ''} wurde${plan.floats > 1 ? 'n' : ''} recycelt. Dafür liegt ${plan.floats} Floating Energy in deiner Runenzone.`)
+    if (plan.floatUsed > 0) msgs.push(`${plan.floatUsed} Floating Energy aus dem Recyceln hat gleich Energy bezahlt.`)
+    if (msgs.length) say(`„${name}“: ${msgs.join(' ')}`)
     const miss = []
     if (plan.missingEnergy > 0) miss.push(`${plan.missingEnergy} Energy`)
     if (plan.missingPower > 0) miss.push(`${plan.missingPower} Power`)
-    if (miss.length) say(`„${name}“: Es fehlten ${miss.join(' und ')} (zu wenige passende Runen). Gespielt wurde trotzdem.`)
+    if (miss.length) say(`„${name}“: Es fehlten ${miss.join(' und ')} (zu wenige passende Runen). Gespielt wurde trotzdem.${msgs.length ? ' ' + msgs.join(' ') : ''}`)
   }
 
   // Alles, was man mit einer eigenen Karte tun kann (für Menü, Vorschau und Hover-Feld)
@@ -652,6 +668,7 @@ export default function Session({ id, view, user }) {
       items.push({ key: 'aim', label: '➚ Pfeil ohne Stack', run: () => { setPreview(null); setHover(null); setAim({ id: iid, mode: 'arrow' }) } })
       if (inst.targets?.length) items.push({ key: 'unaim', label: 'Pfeile entfernen', run: () => act((p) => clearTargets(p, iid)) })
     }
+    if (inst.floating) items.push({ key: 'remove', label: 'Floating Energy entfernen', run: () => act((p) => moveCard(p, iid, 'trash')) })
     if (zone === 'bfExtra') items.push({ key: 'remove', label: 'Battlefield-Token entfernen', run: () => act((p) => moveCard(p, iid, 'trash')) })
     if (canGive(card, zone)) {
       for (const pl of players) {
@@ -927,7 +944,7 @@ export default function Session({ id, view, user }) {
         <PayModal ask={payAsk} cards={cards} mine={mine}
           onCancel={() => setPayAsk(null)}
           onFree={() => { const a = payAsk; setPayAsk(null); act(a.run) }}
-          onPay={(ids) => { const a = payAsk; setPayAsk(null); finishPay(planPayment(mineRef.current, a.cost, cards, ids), a.run, a.name) }} />
+          onPay={(ids) => { const a = payAsk; setPayAsk(null); finishPay(planPayment(mineRef.current, a.cost, cards, ids), a.run, a.name, a.saved) }} />
       )}
       {notice && <div className="toast" role="status" onClick={() => setNotice('')}>{notice}</div>}
       {preview && previewNode()}
@@ -1014,6 +1031,7 @@ export default function Session({ id, view, user }) {
       items: [
         { label: 'Ansicht anpassen…', run: () => setModal({ type: 'view' }) },
         { label: `Runen automatisch bezahlen: ${auto.pay ? 'an' : 'aus'}`, run: () => setAuto({ pay: !auto.pay }) },
+        { label: `Legend-Rabatt anwenden: ${auto.legend !== false ? 'an' : 'aus'}`, run: () => setAuto({ legend: auto.legend === false }) },
         { label: `Einheiten automatisch tappen: ${auto.exhaust ? 'an' : 'aus'}`, run: () => setAuto({ exhaust: !auto.exhaust }) },
         { label: 'Neues Deck wählen', run: () => { if (confirm('Neues Deck wählen? Dein Spielstand wird zurückgesetzt.')) commit(null) } },
         ...(isHost ? [{ label: 'Optionen', run: () => setModal({ type: 'settings' }) }] : []),

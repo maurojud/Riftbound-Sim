@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react'
 import { supabase, fetchAllCards } from './supabase'
 import { KINDS, COLORS, parseCardFilename, allowsSecondColor, colorsOf as colorsOfCard, entersTapped } from './game'
 const TOKEN_TYPES = ['Unit', 'Gear', 'Spell', 'Battlefield', 'Other']
+const LEGEND_KINDS = ['Unit', 'Champion', 'Spell', 'Gear', 'Token']
 import { parseSetNumber, extractCode, fetchCardInfo, mapApiCard } from './cardlookup'
 import CardImg from './CardImg'
 import Pager, { usePaging, pageSlice } from './Pager'
 
-const dbHint = (m) => (/token_type|bf_mode|enters_ready/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-6.sql im SQL Editor ausführen.'
+const dbHint = (m) => (/legend_energy|legend_power|legend_kinds|legend_tap/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-7.sql im SQL Editor ausführen.'
+  : /token_type|bf_mode|enters_ready/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-6.sql im SQL Editor ausführen.'
   : /energy|might|power/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-5.sql im SQL Editor ausführen.'
   : /color2|signature|\bcode\b/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-4.sql im SQL Editor ausführen.' : m)
 const BAD_NAME = /\d|[*#_]|\b[A-Za-z]{2,4}-\d/ // Namen mit Ziffern, Sternchen oder einem Code darin sind verdächtig
@@ -395,6 +397,36 @@ export default function Admin({ user }) {
                   <input defaultValue={c.power_colors || ''} key={c.id + 'pc' + (c.power_colors || '')}
                     onBlur={(e) => e.target.value !== (c.power_colors || '') && patch(c.id, { power_colors: e.target.value.trim() || null })} />
                 </label>
+                {c.kind === 'Legend' && (
+                  <div className="legendpay">
+                    <span className="small muted">Legend übernimmt Kosten (leer = keine)</span>
+                    <span className="nums">
+                      {[['legend_energy', 'Energy'], ['legend_power', 'Power']].map(([f, label]) => (
+                        <label key={f} className="small muted">{label}
+                          <input type="number" min="0" defaultValue={c[f] ?? ''} key={c.id + f + (c[f] ?? '')}
+                            onBlur={(e) => { const v = numOrNull(e.target.value); if (v !== (c[f] ?? null)) patch(c.id, { [f]: v }) }} />
+                        </label>
+                      ))}
+                    </span>
+                    <label className="check small">
+                      <input type="checkbox" checked={c.legend_tap !== false} onChange={(e) => patch(c.id, { legend_tap: e.target.checked })} />
+                      Legend wird getappt, wenn sie Kosten übernimmt
+                    </label>
+                    <span className="small muted">Gilt für (nichts angehakt = alle Karten)</span>
+                    <span className="legendkinds">
+                      {LEGEND_KINDS.map((k) => {
+                        const cur = String(c.legend_kinds || '').split(',').filter(Boolean)
+                        return (
+                          <label key={k} className="check small">
+                            <input type="checkbox" checked={cur.includes(k)}
+                              onChange={(e) => patch(c.id, { legend_kinds: (e.target.checked ? [...cur, k] : cur.filter((x) => x !== k)).join(',') || null })} />
+                            {k}
+                          </label>
+                        )
+                      })}
+                    </span>
+                  </div>
+                )}
                 {c.kind === 'Token' && (
                   <label className="small muted">Token-Typ
                     <select value={c.token_type || ''} onChange={(e) => patch(c.id, { token_type: e.target.value || null })}>

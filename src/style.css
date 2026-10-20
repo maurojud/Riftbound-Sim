@@ -605,3 +605,10 @@ span.pb-n { min-width: 28px; min-height: 28px; }
 .bfcard { position: relative; }
 .bfover { position: absolute; inset: 0; z-index: 3; transform: translate(calc(14px + var(--n, 0) * 12px), calc(10px + var(--n, 0) * 8px)); filter: drop-shadow(0 4px 8px #000a); }
 .tvwrap, .tvtable { --cw: clamp(44px, min(calc((100vh - 84px) / 14.4), 5.2vw), 120px); }
+
+/* v15: Fenster über der Hand, Token-Fenster niedrig und oben, Legend-Rabatt im Verwalter */
+.modal-bg:not(.preview-bg) { z-index: 40; }
+.modal-bg.top { place-items: start center; padding-top: 10px; }
+.modal-bg.top .modal { max-height: 64vh; }
+.legendpay { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 10px; background: #ffffff0a; }
+.legendkinds { display: flex; flex-wrap: wrap; gap: 4px 12px; }

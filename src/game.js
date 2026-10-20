@@ -235,6 +235,7 @@ export function moveCard(p, instId, to, asKid = false) {
     for (const kid of kidIds) { const k = findInst(gone, kid); if (k) { delete k.inst.att; delete k.inst.peek } }
     return gone
   }
+  if (inst.floating && to !== 'runes') return n // Floating Energy verschwindet, sobald sie die Runenzone verlässt
   const boardMove = BOARD.includes(f.zone) && isBoardTarget(to)
   if (!boardMove) {
     inst.tapped = false
@@ -306,7 +307,8 @@ export function changePeek(p, instId, delta) {
 export function targetsFor(card, zone, bfSeats = [], inst = null, hostIds = []) {
   const k = kindOf(card)
   let list
-  if (k === 'rune') list = zone === 'runes' ? ['runeDeck'] : []
+  if (inst?.floating) list = ['trash']
+  else if (k === 'rune') list = zone === 'runes' ? ['runeDeck'] : []
   else if (zone === 'bfExtra') list = ['trash', ...(inst?.ovr ? bfSeats.map((s) => `bfov:${s}`) : [])]
   else if (isBfToken(card)) list = ['trash', ...(card.bf_mode === 'overlay' ? bfSeats.map((s) => `bfov:${s}`) : [])]
   else if (k === 'legend' || k === 'battlefield') list = []
@@ -376,6 +378,7 @@ export function toggleFlag(p, instId, flag) {
   const n = clone(p)
   let f = findInst(n, instId)
   if (!f) return n
+  if (f.inst.floating && flag === 'tapped') return moveCard(p, instId, 'trash') // Floating Energy ist verbraucht
   if (flag === 'tapped' && f.inst.att) f = findInst(n, f.inst.att) || f // angehängte Karten tappen mit ihrer Hauptkarte
   f.inst[flag] = !f.inst[flag]
   if (flag === 'tapped') for (const i of Object.values(n.zones).flat()) if (i.att === f.inst.id) i.tapped = f.inst.tapped
@@ -641,25 +644,57 @@ export function costOf(card) {
   const cols = String(card.power_colors || '').split(',').map((x) => x.trim()).filter(Boolean)
   return { energy: card.energy || 0, power, colors: power ? (cols.length ? cols : colorsOf(card)) : [] }
 }
-// Plan: welche Runen getappt und welche recycelt werden. Bei zwei möglichen Power-Farben und freier Wahl kommt `choice` zurück.
+// Floating Energy: farblose Energy, die entsteht, wenn eine bereite (ungetappte) Rune recycelt wird. Sie liegt als Karte in der Runenzone.
+export const FLOAT_ID = '__float'
+const floatSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="500" height="700"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9aa4b2"/><stop offset="1" stop-color="#4b5563"/></linearGradient></defs><rect width="500" height="700" rx="36" fill="url(#g)"/><rect x="18" y="18" width="464" height="664" rx="26" fill="none" stroke="#e8edf5" stroke-width="6" stroke-dasharray="18 12"/><text x="250" y="320" font-size="150" text-anchor="middle" fill="#fff">✦</text><text x="250" y="430" font-size="52" font-weight="700" text-anchor="middle" fill="#fff" font-family="sans-serif">Floating</text><text x="250" y="495" font-size="52" font-weight="700" text-anchor="middle" fill="#fff" font-family="sans-serif">Energy</text></svg>`
+export const FLOAT_CARD = { id: FLOAT_ID, name: 'Floating Energy', kind: 'Rune', color: null, image_url: 'data:image/svg+xml;utf8,' + encodeURIComponent(floatSvg) }
+
+// Legend-Rabatt: manche Legends übernehmen einen Teil der Energy- oder Power-Kosten (im Karten-Verwalter einstellbar)
+export function legendDiscount(legendCard, card, cost) {
+  if (!legendCard || !cost) return { cost, saved: null }
+  const e = legendCard.legend_energy || 0
+  const pw = legendCard.legend_power || 0
+  if (!e && !pw) return { cost, saved: null }
+  const kinds = String(legendCard.legend_kinds || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)
+  if (kinds.length && !kinds.includes(kindOf(card))) return { cost, saved: null }
+  const saved = { energy: Math.min(e, cost.energy), power: Math.min(pw, cost.power), tap: legendCard.legend_tap !== false }
+  if (!saved.energy && !saved.power) return { cost, saved: null }
+  const power = cost.power - saved.power
+  return { cost: { ...cost, energy: cost.energy - saved.energy, power, colors: power ? cost.colors : [] }, saved }
+}
+
+// Plan: welche Runen getappt und welche recycelt werden.
+// Energy: zuerst Floating Energy, dann Runen in der Farbe der Karte (damit passende getappte Runen zum Recyceln da sind), dann beliebige.
+// Power: zuerst bereits getappte Runen der passenden Farbe recyceln, dann die gerade für Energy getappten, zuletzt bereite (dabei entsteht Floating Energy).
+// Bei zwei möglichen Power-Farben und freier Wahl kommt `choice` zurück.
 export function planPayment(p, cost, cards, chosen) {
   const runes = p.zones.runes
   const col = (r) => cards[r.cardId]?.color
+  const own = (r) => cost.colors.includes(col(r))
+  const rank = (r) => (r.floating ? 0 : (chosen || []).includes(r.id) ? 1 : own(r) ? 2 : 3) // gewählte Power-Runen zuerst tappen: dann kostet das Recyceln keine Floating Energy
+  const tap = runes.filter((r) => !r.tapped).sort((a, b) => rank(a) - rank(b)).slice(0, cost.energy).map((r) => r.id)
   let recycle = []
   if (cost.power > 0) {
-    const cand = runes.filter((r) => cost.colors.includes(col(r)))
+    const cand = runes.filter((r) => !r.floating && cost.colors.includes(col(r)))
+    const pref = (r) => (r.tapped ? 0 : tap.includes(r.id) ? 1 : 2)
     if (chosen) recycle = chosen.filter((id) => cand.some((r) => r.id === id)).slice(0, cost.power)
     else if (cost.colors.length < 2 || new Set(cand.map(col)).size < 2 || cand.length <= cost.power) {
-      recycle = [...cand].sort((a, b) => (b.tapped ? 1 : 0) - (a.tapped ? 1 : 0)).slice(0, cost.power).map((r) => r.id) // bereits getappte zuerst
+      recycle = [...cand].sort((a, b) => pref(a) - pref(b)).slice(0, cost.power).map((r) => r.id)
     } else return { choice: { n: cost.power, candidates: cand.map((r) => r.id) } }
   }
-  const tap = runes.filter((r) => !r.tapped && !recycle.includes(r.id)).slice(0, cost.energy).map((r) => r.id)
-  return { recycle, tap, missingPower: cost.power - recycle.length, missingEnergy: cost.energy - tap.length }
+  let floats = recycle.filter((id) => { const r = runes.find((x) => x.id === id); return !r.tapped && !tap.includes(id) }).length
+  let missingEnergy = cost.energy - tap.length
+  const use = Math.min(floats, missingEnergy) // frisch entstandene Floating Energy zahlt gleich noch fehlende Energy
+  floats -= use
+  missingEnergy -= use
+  return { recycle, tap, floats, floatUsed: use, missingPower: cost.power - recycle.length, missingEnergy }
 }
 export function applyPayment(p, plan) {
   let n = clone(p)
+  n.zones.runes = n.zones.runes.filter((r) => !(r.floating && plan.tap.includes(r.id)))
   for (const r of n.zones.runes) if (plan.tap.includes(r.id)) r.tapped = true
   for (const id of plan.recycle) n = moveCard(n, id, 'runeDeckBottom')
+  for (let i = 0; i < (plan.floats || 0); i++) n.zones.runes.push({ id: uid(), cardId: FLOAT_ID, tapped: false, faceDown: false, floating: true })
   return n
 }
 // Karte tappen (falls noch nicht getappt), inklusive angehängtem Equipment
