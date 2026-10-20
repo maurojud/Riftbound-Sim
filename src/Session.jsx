@@ -929,7 +929,7 @@ export default function Session({ id, view, user }) {
   const pw = sessionStorage.getItem('pw:' + id)
   const joinUrl = `${location.origin}${location.pathname}#/join/${row.code}`
   const ctx = {
-    onAim: (iid) => { setPreview(null); setHover(null); setAim({ id: iid, mode: 'arrow' }) },
+    onAim: view === 'tv' || view === 'watch' ? undefined : (iid) => { setPreview(null); setHover(null); setAim({ id: iid, mode: 'arrow' }) },
     cards, settings, mySeat, players, bindCard, bindPile, onZone, drag, aim: aim?.id || null, pickTarget,
     onApprove: (sig, on) => act((p) => setApproval(p, sig, on)),
     onResolve: (entry) => act((p) => resolveEntry(p, entry)),
