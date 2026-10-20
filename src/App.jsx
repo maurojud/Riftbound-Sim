@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { supabase } from './supabase'
 import { go, useHash } from './nav'
 import Auth from './Auth'
 import Home from './Home'
-import DeckBuilder from './DeckBuilder'
-import Admin from './Admin'
 import Session from './Session'
+const DeckBuilder = lazy(() => import('./DeckBuilder'))
+const Admin = lazy(() => import('./Admin'))
 
 export default function App() {
   const [auth, setAuth] = useState(undefined)
@@ -46,11 +46,11 @@ export default function App() {
         <span className="muted">{user.username}</span>
         <button className="link" onClick={() => supabase.auth.signOut()}>Abmelden</button>
       </nav>
-      <main className="page">
+      <main className="page"><Suspense fallback={<div className="center">Lade…</div>}>
         {a === 'decks' ? <DeckBuilder user={user} /> :
          a === 'admin' ? <Admin user={user} /> :
          <Home user={user} joinCode={a === 'join' ? b : ''} />}
-      </main>
+      </Suspense></main>
     </div>
   )
 }

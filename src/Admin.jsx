@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { shrinkImage } from './imgopt'
 import { supabase, fetchAllCards } from './supabase'
 import { KINDS, COLORS, parseCardFilename, allowsSecondColor, colorsOf as colorsOfCard, entersTapped } from './game'
 const TOKEN_TYPES = ['Unit', 'Gear', 'Spell', 'Battlefield', 'Other']
@@ -92,9 +93,11 @@ export default function Admin({ user }) {
     setMsg('')
     let ok = 0
     for (const r of todo) {
-      const ext = r.file.name.split('.').pop().toLowerCase()
+      let file = r.file
+      try { const s = await shrinkImage(r.file); if (s.blob && s.blob.size < r.file.size) file = s.blob } catch { /* Original hochladen */ }
+      const ext = file.type === 'image/webp' ? 'webp' : file.type === 'image/jpeg' ? 'jpg' : r.file.name.split('.').pop().toLowerCase()
       const path = `${crypto.randomUUID()}.${ext}`
-      const up = await supabase.storage.from('cards').upload(path, r.file, { contentType: r.file.type })
+      const up = await supabase.storage.from('cards').upload(path, file, { contentType: file.type, cacheControl: '31536000' })
       if (up.error) { setMsg(up.error.message); continue }
       const { data } = supabase.storage.from('cards').getPublicUrl(path)
       const ins = await supabase.from('cards').insert({
@@ -111,6 +114,46 @@ export default function Admin({ user }) {
     setBusy(false)
     if (ok === todo.length) setQueue([])
     setMsg((m) => `${ok} von ${todo.length} Karten hochgeladen.${m && ok !== todo.length ? ' ' + m : ''}`)
+    load()
+  }
+
+
+  // Bereits hochgeladene Bilder verkleinern (neue Datei, Adresse in der Datenbank wird ersetzt, alte Datei gelöscht)
+  const [opt, setOpt] = useState(null)
+  async function optimizeAll() {
+    if (!window.confirm('Alle zu großen Kartenbilder verkleinern? Das kann bei vielen Karten einige Minuten dauern. Das Fenster bitte offen lassen.')) return
+    let checked = new Set()
+    try { checked = new Set(JSON.parse(localStorage.getItem('rt:optdone') || '[]')) } catch { /* egal */ }
+    const list = cards.filter((c) => c.image_url && !checked.has(c.id) && !(c.image_path || '').startsWith('opt/'))
+    const st = { total: list.length, done: 0, shrunk: 0, saved: 0, failed: 0, running: true }
+    setOpt({ ...st })
+    let i = 0
+    const worker = async () => {
+      while (i < list.length) {
+        const c = list[i++]
+        try {
+          const blob = await (await fetch(c.image_url)).blob()
+          const s = await shrinkImage(blob)
+          if (s.blob && s.blob.size < blob.size * 0.9) {
+            const ext = s.blob.type === 'image/webp' ? 'webp' : 'jpg'
+            const path = `opt/${c.id}.${ext}`
+            const up = await supabase.storage.from('cards').upload(path, s.blob, { contentType: s.blob.type, cacheControl: '31536000', upsert: true })
+            if (up.error) throw up.error
+            const url = supabase.storage.from('cards').getPublicUrl(path).data.publicUrl
+            const upd = await supabase.from('cards').update({ image_url: url, image_path: path }).eq('id', c.id)
+            if (upd.error) throw upd.error
+            if (c.image_path) await supabase.storage.from('cards').remove([c.image_path])
+            st.shrunk++; st.saved += blob.size - s.blob.size
+          }
+          checked.add(c.id); try { localStorage.setItem('rt:optdone', JSON.stringify([...checked])) } catch { /* egal */ }
+        } catch { st.failed++ }
+        st.done++
+        setOpt({ ...st })
+      }
+    }
+    await Promise.all([worker(), worker(), worker()])
+    st.running = false
+    setOpt({ ...st })
     load()
   }
 
@@ -202,6 +245,14 @@ export default function Admin({ user }) {
 
   return (
     <div className="stack">
+      <section className="panel">
+        <h2>Ladezeit: Bilder verkleinern</h2>
+        <p className="muted">Große Kartenbilder machen das Spiel langsam. Neue Uploads werden automatisch verkleinert (lange Seite höchstens 900 px, WebP). Mit diesem Knopf werden auch alle bereits hochgeladenen Karten verkleinert. Die Qualität bleibt auf Tisch, TV und in der Vorschau gut lesbar.</p>
+        <div className="row">
+          <button onClick={optimizeAll} disabled={!!opt?.running || !cards.length}>Alle vorhandenen Bilder verkleinern</button>
+          {opt && <span className="muted">{opt.done} / {opt.total} geprüft · {opt.shrunk} verkleinert · {(opt.saved / 1048576).toFixed(1)} MB gespart{opt.failed ? ` · ${opt.failed} Fehler` : ''}{opt.running ? ' …' : ' · fertig'}</span>}
+        </div>
+      </section>
       <section className="panel">
         <h2>Karten hochladen</h2>
         <p className="muted">

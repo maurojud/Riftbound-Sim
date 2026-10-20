@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { supabase, fetchAllCards } from './supabase'
+import { supabase, loadCards } from './supabase'
 import { go } from './nav'
 import { Table, MyBoard, CardView, CounterPanel, GameCtx, seatColor } from './Table'
 import CardImg, { applyBfRotation, setBfRotation } from './CardImg'
@@ -8,7 +8,7 @@ import {
   pickBattlefield, pickChampion, targetsFor, canTap, canHide, canReveal, canMark, canAim, canGive, changeCounter, toggleStatus, clearMarks,
   analyzeDeck, fixState, findInst, kindOf, toggleTarget, removeTarget, clearTargets, giveCard, acceptGift, dropGift, takeBackGifts,
   setApproval, resolveEntry, showCards, playToStack, addFx, attachCard, detachCard, changePeek,
-  FLOAT_CARD, legendDiscount, exhaust, costOf, planPayment, applyPayment, moveAuto, spawnTokens, overlayBattlefield, setPoints, drawBottom, drawRuneBottom,
+  COUNTERS, STATUSES, FLOAT_CARD, legendDiscount, exhaust, costOf, planPayment, applyPayment, moveAuto, spawnTokens, overlayBattlefield, setPoints, drawBottom, drawRuneBottom,
 } from './game'
 
 export const SETTING_LABELS = {
@@ -22,6 +22,8 @@ export const VIEW_ZONES = [
   ['base', 'Base'], ['runes', 'Runen'], ['legend', 'Legend'], ['champion', 'Champion'], ['deck', 'Deck'],
   ['runeDeck', 'Runendeck'], ['hand', 'Hand (Anzahl)'], ['trash', 'Trash'], ['banish', 'Banish'],
 ]
+// Standardmäßig ausgeblendet (Tippen auf „Ansicht anpassen“ blendet sie ein): die Hand liegt unten ohnehin als Fächer
+const DEFAULT_HIDDEN = ['deck', 'runeDeck', 'hand', 'runes']
 const loadPrefs = () => {
   try { return JSON.parse(localStorage.getItem('rt:view') || '{}') } catch { return {} }
 }
@@ -204,7 +206,7 @@ function LookModal({ zone, mine, cards, act, onClose }) {
 
 function ViewModal({ prefs, setPrefs, rot, setRot, onClose }) {
   const set = (who, k, v) => setPrefs((p) => { const n = { ...p, [who]: { ...(p[who] || {}), [k]: v } }; savePrefs(n); return n })
-  const val = (who, k) => prefs[who]?.[k] ?? who === 'mine'
+  const val = (who, k) => prefs[who]?.[k] ?? (who === 'mine' && !DEFAULT_HIDDEN.includes(k))
   return (
     <Modal title="Ansicht anpassen" onClose={onClose}>
       <p className="muted small">Gilt nur für dich, im Reiter „Mein Spiel“. Der Fernseher und „Ganzer Tisch“ zeigen immer alles.</p>
@@ -303,6 +305,67 @@ function PayModal({ ask, cards, mine, onCancel, onFree, onPay }) {
         <button onClick={onCancel}>Abbrechen</button>
       </div>
     </Modal>
+  )
+}
+
+
+// Übersicht aller Ziele, solange ein Pfeil/Spielen/Effekt gewählt wird: nach Besitzer und Zone gelistet, mit Status. So muss man nicht den ganzen Tisch einblenden.
+function AimPanel({ players, cards, bfSeats, aimId, mySeat, onPick, onClose }) {
+  const chipsOf = (inst) => {
+    const out = []
+    if (inst.tapped) out.push('getappt')
+    if (inst.faceDown) out.push('verdeckt')
+    const c = inst.counters || {}
+    COUNTERS.forEach((d) => { if (c[d.key]) out.push(`${d.label} ${d.signed && c[d.key] > 0 ? '+' : ''}${c[d.key]}`) })
+    const st = inst.status || {}
+    STATUSES.forEach((d) => { if (st[d.key]) out.push(d.label) })
+    if (inst.token) out.push('Token')
+    return out
+  }
+  const bfInst = (key) => {
+    if (typeof key === 'number') { const pl = players.find((p) => p.seat === key); return pl?.state?.zones.battlefield[0] }
+    return players.flatMap((p) => p.state?.zones.bfExtra || []).find((i) => 'x' + i.id === key)
+  }
+  const sections = []
+  for (const key of bfSeats) {
+    const b = bfInst(key)
+    if (!b) continue
+    const items = [{ inst: b, owner: null, label: 'Battlefield' }]
+    for (const pl of players) for (const u of pl.state?.zones.bfUnits || []) if (String(u.at) === String(key)) items.push({ inst: u, owner: pl, label: 'Battlefield' })
+    sections.push({ key: 'bf' + key, title: `Battlefield: ${cards[b.cardId]?.name || '?'}`, items })
+  }
+  for (const pl of players) {
+    if (!pl.state) continue
+    const z = pl.state.zones
+    for (const [zone, label] of [['base', 'Base'], ['champion', 'Champion'], ['legend', 'Legend'], ['stack', 'Stack']]) {
+      if (z[zone]?.length) sections.push({ key: pl.seat + zone, title: `${pl.name} · ${label}`, seat: pl.seat, items: z[zone].map((inst) => ({ inst, owner: pl, label })) })
+    }
+  }
+  return (
+    <div className="aimpanel" role="region" aria-label="Ziele">
+      <div className="aimpanel-head"><b>Ziele auswählen</b><button onClick={onClose}>Übersicht ausblenden</button></div>
+      {sections.length === 0 && <p className="muted">Keine Ziele im Spiel.</p>}
+      {sections.map((sec) => (
+        <div key={sec.key} className="aimsec">
+          <h4 style={sec.seat ? { color: seatColor(sec.seat) } : undefined}>{sec.title}</h4>
+          <div className="aimtiles">
+            {sec.items.filter((x) => x.inst.id !== aimId).map(({ inst, owner, label }) => {
+              const card = cards[inst.cardId]
+              const hidden = !card || (inst.faceDown && owner && owner.seat !== mySeat)
+              const chips = chipsOf(inst)
+              return (
+                <button key={inst.id} className={'aimtile' + (inst.tapped ? ' tapped' : '')} onClick={() => onPick(inst.id)} data-aimtarget={inst.id}>
+                  <span className="aimimg">{hidden || !card ? <span className="back" /> : <CardImg src={card.image_url} alt={card.name} battlefield={kindOf(card) === 'battlefield'} />}</span>
+                  <b>{hidden ? 'Verdeckte Karte' : card.name}</b>
+                  <span className="aimmeta">{owner ? `${owner.name} · ` : ''}{label}</span>
+                  {chips.length > 0 && <span className="aimchips">{chips.map((c) => <i key={c}>{c}</i>)}</span>}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -406,7 +469,9 @@ export default function Session({ id, view, user }) {
   const [drag, setDrag] = useState(null)
   const dragRef = useRef(null)
   const ghostRef = useRef(null)
-  const [aim, setAim] = useState(null)            // { id, mode } – Karte, für die gerade ein Ziel gewählt wird (arrow, play, fx)
+  const [aimOpen, setAimOpen] = useState(true)
+  const [aim, setAimRaw] = useState(null)            // { id, mode } – Karte, für die gerade ein Ziel gewählt wird (arrow, play, fx)
+  const setAim = (v) => { if (v) setAimOpen(true); setAimRaw(v) }
   const [showing, setShowing] = useState(null)    // kurz gezeigte Karten eines Mitspielers
   const seenShown = useRef({})
   const [prefs, setPrefs] = useState(loadPrefs)
@@ -450,7 +515,10 @@ export default function Session({ id, view, user }) {
 
   useEffect(() => {
     loadRow(); loadMembers()
-    fetchAllCards().then(({ data }) => setCards({ ...Object.fromEntries((data || []).map((c) => [c.id, c])), [FLOAT_CARD.id]: FLOAT_CARD }))
+    const put = (list) => setCards({ ...Object.fromEntries((list || []).map((c) => [c.id, c])), [FLOAT_CARD.id]: FLOAT_CARD })
+    let dead = false
+    loadCards((list) => { if (!dead) put(list) }).then(({ cached }) => { if (cached && !dead) put(cached) })
+    let connected = false
     const ch = supabase
       .channel(`table-${id}`, { config: { broadcast: { self: false } } })
       .on('broadcast', { event: 'seat' }, ({ payload }) => setLive((l) => ({ ...l, [payload.seat]: payload.state })))
@@ -459,11 +527,14 @@ export default function Session({ id, view, user }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions', filter: `id=eq.${id}` }, (p) => p.new && setRow((r) => ({ ...(r || {}), ...p.new })))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'session_members', filter: `session_id=eq.${id}` }, loadMembers)
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') ch.send({ type: 'broadcast', event: 'ping', payload: {} })
+        connected = status === 'SUBSCRIBED'
+        if (connected) ch.send({ type: 'broadcast', event: 'ping', payload: {} })
       })
     chRef.current = ch
-    const t = setInterval(() => { loadRow(); loadMembers() }, 3000) // Notfall-Auffrischung
-    return () => { clearInterval(t); chRef.current = null; supabase.removeChannel(ch) }
+    // Notfall-Auffrischung: ohne Live-Verbindung alle 3 s, mit Live-Verbindung nur alle 15 s; im Hintergrund-Tab gar nicht
+    let n = 0
+    const t = setInterval(() => { n++; if (!document.hidden && (!connected || n % 5 === 0)) { loadRow(); loadMembers() } }, 3000)
+    return () => { dead = true; clearInterval(t); chRef.current = null; supabase.removeChannel(ch) }
   }, [id, loadRow, loadMembers])
 
   useEffect(() => {
@@ -864,7 +935,7 @@ export default function Session({ id, view, user }) {
     onTokens: mySeat && mine && !mine.setup?.battlefield && !mine.setup?.champion ? () => setModal({ type: 'tokens' }) : null,
     previewCard: (cardId) => { setHover(null); setPreview({ seat: null, zone: 'stack', id: 'x', cardId }) },
   }
-  const mineShow = Object.fromEntries(VIEW_ZONES.map(([k]) => [k, prefs.mine?.[k] ?? true]))
+  const mineShow = Object.fromEntries(VIEW_ZONES.map(([k]) => [k, prefs.mine?.[k] ?? !DEFAULT_HIDDEN.includes(k)]))
   const oppShow = Object.fromEntries(VIEW_ZONES.map(([k]) => [k, prefs.opp?.[k] ?? false]))
 
   const zoneModal = () => {
@@ -959,6 +1030,8 @@ export default function Session({ id, view, user }) {
         </Floating>
       )}
       <ArrowLayer players={players} mySeat={mySeat} onRemove={(from, to) => act((p) => removeTarget(p, from, to))} />
+      {aim && tab === 'play' && aimOpen && <AimPanel players={players} cards={cards} bfSeats={bfSeats} aimId={aim.id} mySeat={mySeat} onPick={pickTarget} onClose={() => setAimOpen(false)} />}
+      {aim && tab === 'play' && !aimOpen && <button className="aimshow" onClick={() => setAimOpen(true)}>Ziel-Übersicht zeigen</button>}
       {aim && (
         <div className="aimbar">
           <span>{aim.mode === 'arrow' ? 'Ziel wählen: tippe oder klicke die Karte, auf die der Pfeil zeigen soll.' : 'Ziel wählen: tippe oder klicke die Karte im Spiel, auf die die Karte zielt. Sie wird aufgedeckt und kommt auf den Stack.'}</span>
@@ -1046,6 +1119,15 @@ export default function Session({ id, view, user }) {
         <div className="tabs">
           <button className={tab === 'play' ? 'on' : ''} onClick={() => setTab('play')}>Mein Spiel</button>
           <button className={tab === 'table' ? 'on' : ''} onClick={() => setTab('table')}>Ganzer Tisch</button>
+          {playing && (
+            <>
+              <button onClick={() => act(untapAll)}>Alles enttappen</button>
+              {mine.outbox?.length > 0 && (
+                <button title="Der Mitspieler hat die Karte noch nicht übernommen" onClick={() => act(takeBackGifts)}>Übergabe zurücknehmen ({mine.outbox.length})</button>
+              )}
+              <button onClick={openMore}>Mehr ▾</button>
+            </>
+          )}
           <span className="spacer" />
           <span className="muted small">Code {row.code}</span>
         </div>
@@ -1060,19 +1142,6 @@ export default function Session({ id, view, user }) {
             onChampion={(iid) => act((p) => pickChampion(p, iid))} />
          ) : (
           <>
-            <div className="toolbar">
-              <span className="points">
-                <button onClick={() => act((p) => addPoints(p, -1))}>−</button>
-                <strong>{mine.points} Punkte</strong>
-                <button onClick={() => act((p) => addPoints(p, 1))}>+</button>
-              </span>
-              <button onClick={() => act(untapAll)}>Alles enttappen</button>
-              {mine.outbox?.length > 0 && (
-                <button title="Der Mitspieler hat die Karte noch nicht übernommen" onClick={() => act(takeBackGifts)}>Übergabe zurücknehmen ({mine.outbox.length})</button>
-              )}
-              <button onClick={openMore}>Mehr ▾</button>
-            </div>
-
             {tab === 'table' ? (
               <Table players={players} mySeat={mySeat} />
             ) : (

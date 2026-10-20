@@ -616,3 +616,19 @@ span.pb-n { min-width: 28px; min-height: 28px; }
 /* v16: alle Fenster gleich hoch und oben; Runenauswahl mit Karten in Token-Größe */
 .paygrid { display: flex; flex-wrap: wrap; gap: 14px; }
 .paygrid .paypick { width: 104px; }
+
+/* v19: Kopfleiste bleibt sichtbar, Ziel-Übersicht beim Zielen */
+.tabs { position: sticky; top: 0; z-index: 35; }
+.aimpanel { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 70; width: min(96vw, 940px); max-height: 52vh; overflow: auto;
+  background: #101722; border: 1px solid var(--line); border-radius: 18px; padding: 10px 14px 14px; box-shadow: 0 16px 44px #000b; }
+.aimpanel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 4px; position: sticky; top: -10px; background: #101722; padding: 4px 0; }
+.aimsec h4 { margin: 10px 0 6px; font-size: .85rem; }
+.aimtiles { display: flex; flex-wrap: wrap; gap: 10px; }
+.aimtile { width: 96px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px; border: 2px solid transparent; border-radius: 12px; background: #ffffff0a; font-size: .72rem; text-align: center; }
+.aimtile:hover, .aimtile:focus-visible { border-color: var(--gold); background: #e3b04b22; }
+.aimtile b { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem; }
+.aimimg { width: 100%; display: block; } .aimimg img { width: 100%; display: block; border-radius: 6px; } .aimimg .back { display: block; aspect-ratio: 5 / 7; background: #2a3445; border-radius: 6px; }
+.aimtile.tapped .aimimg { opacity: .75; }
+.aimmeta { color: #9fb0c8; }
+.aimchips { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; } .aimchips i { font-style: normal; background: #e3b04b33; border-radius: 999px; padding: 1px 6px; }
+.aimshow { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 70; }

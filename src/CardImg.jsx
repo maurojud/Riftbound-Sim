@@ -4,10 +4,10 @@ import { useState } from 'react'
 // Die Drehrichtung steht in der CSS-Variable --bfrot (Standard 90deg, umstellbar unter Mehr > Ansicht).
 export default function CardImg({ src, alt = '', battlefield, className = '', ...rest }) {
   const [portrait, setPortrait] = useState(false)
-  if (!battlefield) return <img className={className} src={src} alt={alt} draggable={false} {...rest} />
+  if (!battlefield) return <img className={className} src={src} alt={alt} draggable={false} decoding="async" {...rest} />
   return (
     <div className={'bfimg' + (portrait ? ' portrait' : '')}>
-      <img className={className} src={src} alt={alt} draggable={false} {...rest}
+      <img className={className} src={src} alt={alt} draggable={false} decoding="async" {...rest}
         onLoad={(e) => setPortrait(e.currentTarget.naturalHeight > e.currentTarget.naturalWidth)} />
     </div>
   )
