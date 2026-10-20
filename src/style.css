@@ -552,3 +552,23 @@ fieldset { border-color: #2c3a4d; border-radius: 16px; }
 .pager select { min-height: 34px; padding: 2px 8px; }
 .pager button { min-height: 34px; padding: 0 12px; }
 .pager .pageinfo { font-size: .86rem; color: var(--muted, #9aa7b8); padding: 0 4px; }
+
+/* v13: Token-Auswahl, Runen-Rückfrage, Hinweis */
+.tokenbtn { width: 100%; margin-top: 2px; }
+.tokengrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+.tokentile { display: flex; flex-direction: column; gap: 4px; align-items: center; text-align: center; font-size: .8rem; }
+.tokentile b { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tokenimg { padding: 0; border: 0; background: none; width: 100%; cursor: pointer; }
+.tokenimg:hover { filter: brightness(1.15); }
+.tokenctl { gap: 4px; flex-wrap: wrap; justify-content: center; }
+.tokenctl button { min-height: 32px; padding: 0 10px; }
+.paypick { padding: 4px; border: 2px solid transparent; border-radius: 12px; background: none; display: flex; flex-direction: column; gap: 4px; align-items: center; font-size: .8rem; }
+.paypick.on { border-color: var(--gold); background: #e3b04b22; }
+.toast { position: fixed; left: 50%; bottom: 150px; transform: translateX(-50%); z-index: 400; max-width: min(90vw, 560px); padding: 10px 16px; border-radius: 14px; background: #0a0e14f0; border: 1px solid var(--gold); box-shadow: 0 6px 24px #000a; font-size: .9rem; }
+
+/* Stack-Karten exakt so groß wie die Karten im Base (Spieler- und TV-Ansicht) */
+.stackcol { width: calc(var(--cw) + 30px); }
+.stackcol .card, .stackcol .card.xs { --w: var(--cw); }
+.tvwrap .stackcol, .tvwrap .stackcol .card.xs { width: auto; }
+.tvwrap .stackcol { width: calc(var(--cw) + 30px); }
+.tvwrap .stackcol .card.xs { --w: var(--cw); width: var(--cw); }

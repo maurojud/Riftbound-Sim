@@ -225,6 +225,11 @@ export function moveCard(p, instId, to, asKid = false) {
   if (!valid) return p
   const kidIds = asKid ? [] : Object.values(n.zones).flat().filter((i) => i.att === instId).map((i) => i.id)
   const inst = take(n, instId)
+  if (inst.token && !isBoardTarget(to) && to !== 'stack') { // Tokens verschwinden, sobald sie das Spielfeld verlassen
+    let gone = n
+    for (const kid of kidIds) { const k = findInst(gone, kid); if (k) { delete k.inst.att; delete k.inst.peek } }
+    return gone
+  }
   const boardMove = BOARD.includes(f.zone) && isBoardTarget(to)
   if (!boardMove) {
     inst.tapped = false
@@ -445,14 +450,16 @@ export function addFx(p, instId, targetId) {
   return n
 }
 // Karte spielen: Spells (und alles andere) liegen nur auf dem Stack, Einheiten/Ausrüstung kommen aufs Spielfeld und stehen zusätzlich im Stack.
-export function playToStack(p, instId, targetId, cards) {
+export function playToStack(p, instId, targetId, cards, auto = {}) {
   const f = findInst(p, instId)
   if (!f) return p
   const k = kindOf(cards[f.inst.cardId])
   if (['unit', 'champion', 'token', 'gear'].includes(k)) {
-    let n = BOARD.includes(f.zone) || f.zone === 'champion' ? p : moveCard(p, instId, 'base')
+    const entering = !BOARD.includes(f.zone)
+    let n = entering ? moveCard(p, instId, 'base') : p
     const g = findInst(n, instId)
     if (g && g.inst.faceDown) n = toggleFlag(n, instId, 'faceDown')
+    if (entering && auto.exhaust && ['unit', 'champion'].includes(k)) n = exhaust(n, instId)
     return addFx(n, instId, targetId)
   }
   const n = moveCard(p, instId, 'stack')
@@ -615,4 +622,57 @@ export function formatDeckList(qty, byId, champion) {
     } else lines.MainDeck.push(`${n} ${c.name}`)
   }
   return Object.entries(lines).filter(([, l]) => l.length).map(([h, l]) => `${h}:\n${l.join('\n')}`).join('\n\n')
+}
+
+
+// ───────── Kosten bezahlen, Einheiten tappen, Tokens ─────────
+// Energy = Runen tappen, Power = Runen der passenden Farbe recyceln (unter das Runendeck). Ohne bekannte Kosten passiert nichts.
+export function costOf(card) {
+  if (!card || ['rune', 'legend', 'battlefield'].includes(kindOf(card))) return null
+  if (card.energy == null && card.power == null) return null
+  const power = card.power || 0
+  const cols = String(card.power_colors || '').split(',').map((x) => x.trim()).filter(Boolean)
+  return { energy: card.energy || 0, power, colors: power ? (cols.length ? cols : colorsOf(card)) : [] }
+}
+// Plan: welche Runen getappt und welche recycelt werden. Bei zwei möglichen Power-Farben und freier Wahl kommt `choice` zurück.
+export function planPayment(p, cost, cards, chosen) {
+  const runes = p.zones.runes
+  const col = (r) => cards[r.cardId]?.color
+  let recycle = []
+  if (cost.power > 0) {
+    const cand = runes.filter((r) => cost.colors.includes(col(r)))
+    if (chosen) recycle = chosen.filter((id) => cand.some((r) => r.id === id)).slice(0, cost.power)
+    else if (cost.colors.length < 2 || new Set(cand.map(col)).size < 2 || cand.length <= cost.power) {
+      recycle = [...cand].sort((a, b) => (b.tapped ? 1 : 0) - (a.tapped ? 1 : 0)).slice(0, cost.power).map((r) => r.id) // bereits getappte zuerst
+    } else return { choice: { n: cost.power, candidates: cand.map((r) => r.id) } }
+  }
+  const tap = runes.filter((r) => !r.tapped && !recycle.includes(r.id)).slice(0, cost.energy).map((r) => r.id)
+  return { recycle, tap, missingPower: cost.power - recycle.length, missingEnergy: cost.energy - tap.length }
+}
+export function applyPayment(p, plan) {
+  let n = clone(p)
+  for (const r of n.zones.runes) if (plan.tap.includes(r.id)) r.tapped = true
+  for (const id of plan.recycle) n = moveCard(n, id, 'runeDeckBottom')
+  return n
+}
+// Karte tappen (falls noch nicht getappt), inklusive angehängtem Equipment
+export function exhaust(p, instId) {
+  const f = findInst(p, instId)
+  return f && !f.inst.tapped ? toggleFlag(p, instId, 'tapped') : p
+}
+// Einheiten und Champions treten getappt ins Spiel und tappen, wenn sie vom Base auf ein Battlefield ziehen
+export function moveAuto(p, instId, to, cards, auto = {}) {
+  const f = findInst(p, instId)
+  if (!f) return p
+  const n = moveCard(p, instId, to)
+  if (!auto.exhaust || !['unit', 'champion'].includes(kindOf(cards[f.inst.cardId]))) return n
+  const enters = (f.zone === 'hand' || f.zone === 'champion') && isBoardTarget(to)
+  const moves = f.zone === 'base' && to.startsWith('bf:')
+  return enters || moves ? exhaust(n, instId) : n
+}
+// Token ins Spiel bringen: `count` neue Karten im Base, mit allen Eigenschaften normaler Karten
+export function spawnTokens(p, cardId, count = 1) {
+  const n = clone(p)
+  for (let i = 0; i < count; i++) n.zones.base.push({ id: uid(), cardId, tapped: false, faceDown: false, token: true })
+  return n
 }

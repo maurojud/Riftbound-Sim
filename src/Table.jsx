@@ -184,6 +184,7 @@ export function StackCol() {
           {allOk && top.seat !== g.mySeat && <span className="muted small">{g.players.find((p) => p.seat === top.seat)?.name} löst auf</span>}
         </>)}
       </div>
+      {g.onTokens && <button className="tokenbtn" onClick={g.onTokens} title="Token-Karten spielen">Tokens</button>}
     </aside>
   )
 }

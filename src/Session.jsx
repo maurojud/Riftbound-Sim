@@ -8,6 +8,7 @@ import {
   pickBattlefield, pickChampion, targetsFor, canTap, canHide, canReveal, canMark, canAim, canGive, changeCounter, toggleStatus, clearMarks,
   analyzeDeck, fixState, findInst, kindOf, toggleTarget, removeTarget, clearTargets, giveCard, acceptGift, dropGift, takeBackGifts,
   setApproval, resolveEntry, showCards, playToStack, addFx, attachCard, detachCard, changePeek,
+  costOf, planPayment, applyPayment, moveAuto, spawnTokens,
 } from './game'
 
 export const SETTING_LABELS = {
@@ -279,6 +280,60 @@ function Setup({ mine, cards, onBattlefield, onChampion }) {
 }
 
 // Handkarten als Fächer. Jede Karte hat einen "Hide"-Schalter: verdeckt gespielte Karten sieht der Gegner nicht.
+// Rückfrage bei Karten mit zwei Power-Farben: welche Runen sollen recycelt werden?
+function PayModal({ ask, cards, mine, onCancel, onFree, onPay }) {
+  const [picked, setPicked] = useState([])
+  const runes = ask.choice.candidates.map((id) => mine.zones.runes.find((r) => r.id === id)).filter(Boolean)
+  const toggle = (id) => setPicked((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : cur.length < ask.choice.n ? [...cur, id] : cur))
+  return (
+    <Modal title={`„${ask.name}“ bezahlen`} onClose={onCancel}>
+      <p>Wähle {ask.choice.n} {ask.choice.n === 1 ? 'Rune' : 'Runen'} ({ask.cost.colors.join(' oder ')}) zum Recyceln. Sie kommen unter das Runendeck.
+        {ask.cost.energy > 0 && ` Zusätzlich werden ${ask.cost.energy} Runen für die Energy getappt.`}</p>
+      <div className="zone-grid">
+        {runes.map((r) => (
+          <button key={r.id} className={'paypick' + (picked.includes(r.id) ? ' on' : '')} aria-pressed={picked.includes(r.id)} onClick={() => toggle(r.id)}>
+            <CardImg src={cards[r.cardId]?.image_url} alt={cards[r.cardId]?.name} />
+            <span>{cards[r.cardId]?.color}{r.tapped ? ' · getappt' : ''}</span>
+          </button>
+        ))}
+      </div>
+      <div className="row">
+        <button className="primary" disabled={picked.length !== ask.choice.n} onClick={() => onPay(picked)}>Bezahlen und spielen ({picked.length}/{ask.choice.n})</button>
+        <button onClick={onFree}>Ohne Bezahlen spielen</button>
+        <button onClick={onCancel}>Abbrechen</button>
+      </div>
+    </Modal>
+  )
+}
+
+// Dauerhafte Token-Auswahl: jede Token-Karte der Datenbank, beliebig oft spielbar
+function TokenModal({ tokens, onSpawn, onClose }) {
+  const [n, setN] = useState({})
+  const cnt = (id) => n[id] || 1
+  return (
+    <Modal title="Tokens spielen" onClose={onClose}>
+      {tokens.length === 0 && <p className="muted">Noch keine Token-Karten vorhanden. Im Karten-Verwalter die Art „Token“ setzen.</p>}
+      <div className="zone-grid tokengrid">
+        {tokens.map((c) => (
+          <div key={c.id} className="tokentile">
+            <button className="tokenimg" title="Klick spielt 1 Token" onClick={() => onSpawn(c, 1)}>
+              <CardImg src={c.image_url} alt={c.name} />
+            </button>
+            <b title={c.name}>{c.name}</b>
+            <div className="row tokenctl">
+              <button aria-label="weniger" onClick={() => setN((cur) => ({ ...cur, [c.id]: Math.max(1, (cur[c.id] || 1) - 1) }))}>−</button>
+              <span>{cnt(c.id)}</span>
+              <button aria-label="mehr" onClick={() => setN((cur) => ({ ...cur, [c.id]: Math.min(20, (cur[c.id] || 1) + 1) }))}>+</button>
+              <button className="primary" onClick={() => onSpawn(c, cnt(c.id))}>{cnt(c.id)}× spielen</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <p className="muted small">Tokens landen im Base und verhalten sich wie normale Karten. Verlassen sie das Spielfeld, verschwinden sie.</p>
+    </Modal>
+  )
+}
+
 export function HandFan({ hand, cards, cw, bind, drag, onHide, onPlay }) {
   const [w, setW] = useState(window.innerWidth)
   useEffect(() => {
@@ -350,6 +405,12 @@ export default function Session({ id, view, user }) {
   const [rot, setRot] = useState(() => applyBfRotation())
   const [err, setErr] = useState('')
   const [vw, setVw] = useState(window.innerWidth)
+  const [auto, setAutoState] = useState(() => { try { return { pay: true, exhaust: true, ...JSON.parse(localStorage.getItem('rt:auto')) } } catch { return { pay: true, exhaust: true } } })
+  const setAuto = (patch) => setAutoState((a) => { const n = { ...a, ...patch }; try { localStorage.setItem('rt:auto', JSON.stringify(n)) } catch { /* egal */ } return n })
+  const [payAsk, setPayAsk] = useState(null)      // Rückfrage: welche Runen sollen für Power recycelt werden?
+  const [notice, setNotice] = useState('')
+  const noticeT = useRef(null)
+  const say = (t) => { setNotice(t); clearTimeout(noticeT.current); noticeT.current = setTimeout(() => setNotice(''), 5000) }
 
   useEffect(() => {
     const f = () => setVw(window.innerWidth)
@@ -513,11 +574,34 @@ export default function Session({ id, view, user }) {
       })
       return
     }
-    act((p) => moveCard(p, d.id, over))
+    payThen(d.id, over, (p) => moveAuto(p, d.id, over, cards, auto))
   }
   useEffect(() => {
     if (drag && ghostRef.current) ghostRef.current.style.transform = `translate(${drag.x - drag.w / 2}px, ${drag.y - drag.w * 0.7}px)`
   }, [drag?.id]) // eslint-disable-line
+
+  // Karte aus Hand/Champion-Zone ins Spiel: Kosten automatisch mit Runen bezahlen (Energy = tappen, Power = recyceln), danach die Aktion ausführen
+  function payThen(instId, to, run) {
+    const cur = findInst(mineRef.current, instId)
+    const card = cur && cards[cur.inst.cardId]
+    const play = !!cur && ['hand', 'champion'].includes(cur.zone) && (to === 'stack' || to === 'base' || to.startsWith('bf:')) && !cur.inst.faceDown && !cur.inst.token
+    if (!play || !auto.pay) return act(run)
+    const cost = costOf(card)
+    if (!cost) {
+      if (card && !['rune', 'legend', 'battlefield'].includes(kindOf(card))) say(`Kosten von „${card.name}“ sind nicht hinterlegt, deshalb nicht automatisch bezahlt.`)
+      return act(run)
+    }
+    const plan = planPayment(mineRef.current, cost, cards)
+    if (plan.choice) return setPayAsk({ cost, choice: plan.choice, run, name: card.name })
+    return finishPay(plan, run, card.name)
+  }
+  function finishPay(plan, run, name) {
+    act((p) => run(applyPayment(p, plan)))
+    const miss = []
+    if (plan.missingEnergy > 0) miss.push(`${plan.missingEnergy} Energy`)
+    if (plan.missingPower > 0) miss.push(`${plan.missingPower} Power`)
+    if (miss.length) say(`„${name}“: Es fehlten ${miss.join(' und ')} (zu wenige passende Runen). Gespielt wurde trotzdem.`)
+  }
 
   // Alles, was man mit einer eigenen Karte tun kann (für Menü, Vorschau und Hover-Feld)
   function actionsFor(iid) {
@@ -554,14 +638,14 @@ export default function Session({ id, view, user }) {
     setAim(null)
     if (!cur || cur.id === targetId) return
     if (cur.mode === 'arrow') act((p) => toggleTarget(p, cur.id, targetId))
-    else if (cur.mode === 'play') act((p) => playToStack(p, cur.id, targetId, cards))
+    else if (cur.mode === 'play') payThen(cur.id, 'stack', (p) => playToStack(p, cur.id, targetId, cards, auto))
     else act((p) => addFx(p, cur.id, targetId))
   }
   function noTarget() {
     const cur = aim
     setAim(null)
     if (!cur) return
-    if (cur.mode === 'play') act((p) => playToStack(p, cur.id, null, cards))
+    if (cur.mode === 'play') payThen(cur.id, 'stack', (p) => playToStack(p, cur.id, null, cards, auto))
     else if (cur.mode === 'fx') act((p) => addFx(p, cur.id, null))
   }
 
@@ -729,6 +813,7 @@ export default function Session({ id, view, user }) {
     onApprove: (sig, on) => act((p) => setApproval(p, sig, on)),
     onResolve: (entry) => act((p) => resolveEntry(p, entry)),
     onRemoveFx: (fxId) => act((p) => resolveEntry(p, { fx: { id: fxId } })),
+    onTokens: mySeat && mine && !mine.setup?.battlefield && !mine.setup?.champion ? () => setModal({ type: 'tokens' }) : null,
     previewCard: (cardId) => { setHover(null); setPreview({ seat: null, zone: 'stack', id: 'x', cardId }) },
   }
   const mineShow = Object.fromEntries(VIEW_ZONES.map(([k]) => [k, prefs.mine?.[k] ?? true]))
@@ -803,6 +888,17 @@ export default function Session({ id, view, user }) {
           </div>
         </Modal>
       )}
+      {modal?.type === 'tokens' && (
+        <TokenModal tokens={Object.values(cards).filter((c) => kindOf(c) === 'token').sort((a, b) => (a.code || a.name).localeCompare(b.code || b.name))}
+          onSpawn={(c, n) => { act((p) => spawnTokens(p, c.id, n)); say(`${n}× ${c.name} gespielt.`) }} onClose={() => setModal(null)} />
+      )}
+      {payAsk && (
+        <PayModal ask={payAsk} cards={cards} mine={mine}
+          onCancel={() => setPayAsk(null)}
+          onFree={() => { const a = payAsk; setPayAsk(null); act(a.run) }}
+          onPay={(ids) => { const a = payAsk; setPayAsk(null); finishPay(planPayment(mineRef.current, a.cost, cards, ids), a.run, a.name) }} />
+      )}
+      {notice && <div className="toast" role="status" onClick={() => setNotice('')}>{notice}</div>}
       {preview && previewNode()}
       {hover && hoverInfo && hoverInfo.zone === hover.zone && !drag && !preview && !aim && (
         <Floating rect={hover.rect} onEnter={keepHover} onLeave={hideHover}>
@@ -886,6 +982,8 @@ export default function Session({ id, view, user }) {
       x: r.right - 190, y: r.bottom + 4,
       items: [
         { label: 'Ansicht anpassen…', run: () => setModal({ type: 'view' }) },
+        { label: `Runen automatisch bezahlen: ${auto.pay ? 'an' : 'aus'}`, run: () => setAuto({ pay: !auto.pay }) },
+        { label: `Einheiten automatisch tappen: ${auto.exhaust ? 'an' : 'aus'}`, run: () => setAuto({ exhaust: !auto.exhaust }) },
         { label: 'Neues Deck wählen', run: () => { if (confirm('Neues Deck wählen? Dein Spielstand wird zurückgesetzt.')) commit(null) } },
         ...(isHost ? [{ label: 'Optionen', run: () => setModal({ type: 'settings' }) }] : []),
         { label: 'Session verlassen', run: () => go('/') },
