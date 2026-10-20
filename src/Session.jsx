@@ -8,7 +8,7 @@ import {
   pickBattlefield, pickChampion, targetsFor, canTap, canHide, canReveal, canMark, canAim, canGive, changeCounter, toggleStatus, clearMarks,
   analyzeDeck, fixState, findInst, kindOf, toggleTarget, removeTarget, clearTargets, giveCard, acceptGift, dropGift, takeBackGifts,
   setApproval, resolveEntry, showCards, playToStack, addFx, attachCard, detachCard, changePeek,
-  COUNTERS, STATUSES, FLOAT_CARD, legendDiscount, exhaust, costOf, planPayment, applyPayment, moveAuto, spawnTokens, overlayBattlefield, setPoints, drawBottom, drawRuneBottom,
+  COUNTERS, STATUSES, syncBuffs, FLOAT_CARD, legendDiscount, exhaust, costOf, planPayment, applyPayment, moveAuto, spawnTokens, overlayBattlefield, setPoints, drawBottom, drawRuneBottom,
 } from './game'
 
 export const SETTING_LABELS = {
@@ -551,6 +551,12 @@ export default function Session({ id, view, user }) {
     if (error) setErr(error.message)
   }
   const act = (fn) => mineRef.current && commit(fn(mineRef.current))
+  // Buff-Tokens auf Einheiten zählen automatisch den Buff-Zähler mit
+  useEffect(() => {
+    if (!mineRef.current || !Object.keys(cards).length) return
+    const n = syncBuffs(mineRef.current, cards)
+    if (n !== mineRef.current) commit(n)
+  }, [mine, cards]) // eslint-disable-line
 
   const players = members
     .filter((m) => m.seat)
@@ -811,7 +817,7 @@ export default function Session({ id, view, user }) {
       let dragging = false
       let long = false
       let moved = false
-      const timer = ptype === 'mouse' ? null : setTimeout(() => { long = true; cleanup(); openMenu(sx, sy) }, 520)
+      const timer = ptype === 'mouse' ? null : setTimeout(() => { long = true; cleanup(); navigator.vibrate?.(20); openPreview(seat, zone, inst) }, 520) // langes Drücken = große Ansicht mit allen Optionen
       const move = (ev) => {
         if (long) return
         if (!dragging) {

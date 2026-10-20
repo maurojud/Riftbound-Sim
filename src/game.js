@@ -762,3 +762,27 @@ export function drawRuneBottom(p) {
   if (n.zones.runeDeck.length) n.zones.runes.push(n.zones.runeDeck.pop())
   return n
 }
+
+// Buff-Token auf einer Einheit zählt automatisch den Buff-Zähler hoch, fällt er weg, geht der Zähler wieder herunter (nie unter 0).
+// `buffTok` merkt sich, wie viele Buff-Tokens schon eingerechnet sind. Gibt dasselbe Objekt zurück, wenn nichts zu tun ist.
+export const isBuffToken = (card) => kindOf(card) === 'token' && /^\s*buff\b/i.test(card?.name || '')
+export function syncBuffs(p, cards) {
+  if (!p || !cards) return p
+  const all = Object.values(p.zones).flat()
+  const count = {}
+  for (const i of all) if (i.att && isBuffToken(cards[i.cardId])) count[i.att] = (count[i.att] || 0) + 1
+  const dirty = all.some((i) => (count[i.id] || 0) !== (i.buffTok || 0))
+  if (!dirty) return p
+  const n = clone(p)
+  for (const i of Object.values(n.zones).flat()) {
+    const now = count[i.id] || 0
+    const was = i.buffTok || 0
+    if (now === was) continue
+    const cur = (i.counters || {}).buff || 0
+    const next = Math.max(0, cur + now - was)
+    if (next) i.counters = { ...(i.counters || {}), buff: next }
+    else if (i.counters) { delete i.counters.buff; if (!Object.keys(i.counters).length) delete i.counters }
+    if (now) i.buffTok = now; else delete i.buffTok
+  }
+  return n
+}

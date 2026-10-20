@@ -639,3 +639,4 @@ span.pb-n { min-width: 28px; min-height: 28px; }
 .aimchip ~ .hidechip { left: 33px; }
 .fan-card .playchip { display: none; }
 @media (pointer: coarse) { .aimchip { min-width: 34px; line-height: 1.9; font-size: 1rem; } .aimchip ~ .hidechip { left: 42px; line-height: 1.9; } .card.xs .aimchip { min-width: 28px; } }
+.paypick img { width: 100%; height: auto; display: block; border-radius: 7px; }
