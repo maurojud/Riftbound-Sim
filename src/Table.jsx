@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import { kindOf, COUNTERS, STATUSES, stackEntries, stackSig, approvedBy } from './game'
+import { kindOf, isBfToken, COUNTERS, STATUSES, stackEntries, stackSig, approvedBy } from './game'
 import CardImg from './CardImg'
 
 // Alles, was die Tisch-Bausteine von der Session brauchen (Karten, Regeln, Spieler, Drag-Zustand, Klick-Handler)
@@ -30,7 +30,7 @@ function Marks({ inst }) {
 export function CardView({ card, inst, reveal = true, small, xs, onClick, handlers, dim, owner, extra, aimFrom, iid, drop }) {
   const g = useContext(GameCtx)
   const hidden = !card || (inst?.faceDown && !reveal)
-  const land = kindOf(card) === 'battlefield' && !hidden
+  const land = (kindOf(card) === 'battlefield' || isBfToken(card)) && !hidden
   const h = { ...(handlers || {}) }
   if (onClick) h.onClick = onClick
   const cls = ['card', inst?.tapped && 'tapped', small && 'small', xs && 'xs', land && 'land', dim && 'dim', owner && 'owned', aimFrom && 'aimfrom',
@@ -191,13 +191,16 @@ export function StackCol() {
 
 // Ein Battlefield-Feld: oben und unten je eine Einheiten-Zone (die Karten eines Spielers liegen in der Zone auf seiner Seite),
 // in der Mitte die Battlefield-Karte (immer quer).
-export function BfZone({ owner, topSeats }) {
+export function BfZone({ owner, topSeats, extra }) {
   const g = useG()
-  const bf = owner.state?.zones.battlefield[0]
+  const bf = extra || owner.state?.zones.battlefield[0]
+  const key = extra ? 'x' + extra.id : owner.seat
   const droppable = g.mySeat != null && !!bf
+  // Overlay-Battlefields, die leicht versetzt über dieses Battlefield gelegt wurden
+  const overs = g.players.flatMap((p) => (p.state?.zones.bfExtra || []).filter((i) => i.ovr === String(key)).map((inst) => ({ seat: p.seat, inst })))
   const strip = (top) => {
     const seats = g.players.filter((p) => topSeats.has(p.seat) === top)
-    const parts = seats.map((p) => ({ seat: p.seat, list: (p.state?.zones.bfUnits || []).filter((i) => i.at === owner.seat) })).filter((x) => x.list.length)
+    const parts = seats.map((p) => ({ seat: p.seat, list: (p.state?.zones.bfUnits || []).filter((i) => String(i.at) === String(key)) })).filter((x) => x.list.length)
     return (
       <div className={'bfstrip ' + (top ? 'top' : 'bottom')}>
         {parts.map((x) => <CardList key={x.seat} seat={x.seat} zone="bfUnits" list={x.list} xs outline />)}
@@ -206,17 +209,49 @@ export function BfZone({ owner, topSeats }) {
     )
   }
   return (
-    <div className={'zonebox bf' + dropCls(g, droppable ? `bf:${owner.seat}` : null)} data-drop={droppable ? `bf:${owner.seat}` : undefined}>
-      <div className="zt"><span className="dot" style={{ background: seatColor(owner.seat) }} /> Battlefield · {owner.name}</div>
+    <div className={'zonebox bf' + dropCls(g, droppable ? `bf:${key}` : null)} data-drop={droppable ? `bf:${key}` : undefined}>
+      <div className="zt"><span className="dot" style={{ background: seatColor(owner.seat) }} /> {extra ? 'Zusatz-Battlefield' : 'Battlefield'} · {owner.name}</div>
       {strip(true)}
       <div className="bfmid">
-        <div className="bfcard">
+        <div className={'bfcard' + dropCls(g, droppable ? `bfov:${key}` : null)} data-drop={droppable ? `bfov:${key}` : undefined}>
           {bf
-            ? <CardView card={g.cards[bf.cardId]} inst={bf} handlers={g.bindCard(owner.seat, 'battlefield', bf)} aimFrom={g.aim === bf.id} />
+            ? <CardView card={g.cards[bf.cardId]} inst={bf} handlers={g.bindCard(owner.seat, extra ? 'bfExtra' : 'battlefield', bf)} aimFrom={g.aim === bf.id} />
             : <Empty>{owner.state ? 'wählt noch…' : 'noch kein Deck'}</Empty>}
+          {overs.map((o, n) => (
+            <div key={o.inst.id} className="bfover" style={{ '--n': n }}>
+              <CardView card={g.cards[o.inst.cardId]} inst={o.inst} owner={o.seat} handlers={g.bindCard(o.seat, 'bfExtra', o.inst)} />
+            </div>
+          ))}
         </div>
       </div>
       {strip(false)}
+    </div>
+  )
+}
+
+// Alle Zusatz-Battlefields (Tokens im Modus „3. Battlefield“) in Sitzreihenfolge
+export const extraBattlefields = (players) => players.flatMap((pl) => (pl.state?.zones.bfExtra || []).filter((i) => !i.ovr).map((inst) => ({ owner: pl, inst })))
+
+// Punkte: Reihe 0–8 zum Anwählen, − links und + rechts für mehr; bei fremden Spielern nur Anzeige
+export function PointsBar({ player }) {
+  const g = useG()
+  const own = player.seat === g.mySeat
+  const pts = player.state?.points || 0
+  const slots = Math.max(9, pts + 1)
+  return (
+    <div className="pointsbar" style={{ '--sc': seatColor(player.seat) }}>
+      <span className="pb-name"><span className="dot" style={{ background: seatColor(player.seat) }} />{player.name}</span>
+      {own && <button className="pb-step" aria-label="Punkt abziehen" onClick={() => g.onPoints(-1)}>−</button>}
+      <span className="pb-track" role="group" aria-label={`Punkte von ${player.name}`}>
+        {Array.from({ length: slots }, (_, i) => {
+          const cls = 'pb-n' + (i === pts ? ' on' : i < pts ? ' lit' : '')
+          return own
+            ? <button key={i} className={cls} aria-pressed={i === pts} onClick={() => g.onSetPoints(i)}>{i}</button>
+            : <span key={i} className={cls}>{i}</span>
+        })}
+      </span>
+      {own && <button className="pb-step" aria-label="Punkt dazu" onClick={() => g.onPoints(1)}>+</button>}
+      <b className="pb-val">{pts} Punkte</b>
     </div>
   )
 }
@@ -281,7 +316,11 @@ export function MyBoard({ players, mySeat, mineShow, oppShow }) {
             <Mat player={o} show={oppShow} variant="top" />
           </div>
         ))}
-        <div className="bfrow">{players.map((pl) => <BfZone key={pl.seat} owner={pl} topSeats={topSeats} />)}</div>
+        <div className="bfrow">
+          {players.map((pl) => <BfZone key={pl.seat} owner={pl} topSeats={topSeats} />)}
+          {extraBattlefields(players).map((x) => <BfZone key={x.inst.id} owner={x.owner} extra={x.inst} topSeats={topSeats} />)}
+        </div>
+        <PointsBar player={me} />
         <Tag player={me} />
         <Mat player={me} show={mineShow} />
       </div>
@@ -318,7 +357,12 @@ export function Table({ players, mySeat }) {
     <div className="withstack tvwrap">
       <div className={`tvtable n${n}`}>
         <div className="half">{top.map((pl) => <Half key={pl.seat} player={pl} variant="top" />)}</div>
-        <div className="mid">{players.map((pl) => <BfZone key={pl.seat} owner={pl} topSeats={topSeats} />)}</div>
+        <div className="ptsrow">{top.map((pl) => <PointsBar key={pl.seat} player={pl} />)}</div>
+        <div className="mid">
+          {players.map((pl) => <BfZone key={pl.seat} owner={pl} topSeats={topSeats} />)}
+          {extraBattlefields(players).map((x) => <BfZone key={x.inst.id} owner={x.owner} extra={x.inst} topSeats={topSeats} />)}
+        </div>
+        <div className="ptsrow">{bottom.map((pl) => <PointsBar key={pl.seat} player={pl} />)}</div>
         <div className="half">{bottom.map((pl) => <Half key={pl.seat} player={pl} variant="bottom" />)}</div>
       </div>
       <StackCol />

@@ -4,6 +4,7 @@ export const ZONES = {
   base: 'Base',
   battlefield: 'Battlefield',
   bfUnits: 'Battlefield',
+  bfExtra: 'Battlefield',
   stack: 'Stack',
   deck: 'Deck',
   runeDeck: 'Runendeck',
@@ -73,11 +74,15 @@ export const kindOf = (c) => (c?.kind || '').toLowerCase()
 
 const uid = () => Math.random().toString(36).slice(2, 10)
 
+// Mehrfach mischen (5 bis 8 Durchgänge), damit auch eine sortierte Ausgangsreihenfolge sicher durchmischt ist
 export function shuffled(arr) {
   const r = [...arr]
-  for (let i = r.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[r[i], r[j]] = [r[j], r[i]]
+  const passes = 5 + Math.floor(Math.random() * 4)
+  for (let k = 0; k < passes; k++) {
+    for (let i = r.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[r[i], r[j]] = [r[j], r[i]]
+    }
   }
   return r
 }
@@ -146,15 +151,15 @@ export function canAdd(qty, byId, card) {
 
 // ───────── Spielzustand ─────────
 const emptyZones = () => ({
-  hand: [], base: [], battlefield: [], bfUnits: [], deck: [], runeDeck: [], legend: [], champion: [], runes: [], trash: [], banish: [], bfPool: [], stack: [],
+  hand: [], base: [], battlefield: [], bfUnits: [], bfExtra: [], deck: [], runeDeck: [], legend: [], champion: [], runes: [], trash: [], banish: [], bfPool: [], stack: [],
 })
 const clone = (p) => JSON.parse(JSON.stringify(p))
 export const isValidState = (s) => !!(s && s.zones && s.zones.base)
 // Ältere Spielstände ohne Battlefield-Einheiten ergänzen
 export function fixState(s) {
   if (!isValidState(s)) return null
-  if (s.zones.bfUnits && s.zones.stack) return s
-  return { ...s, zones: { ...s.zones, bfUnits: s.zones.bfUnits || [], stack: s.zones.stack || [] } }
+  if (s.zones.bfUnits && s.zones.stack && s.zones.bfExtra) return s
+  return { ...s, zones: { ...s.zones, bfUnits: s.zones.bfUnits || [], stack: s.zones.stack || [], bfExtra: s.zones.bfExtra || [] } }
 }
 
 export function buildPlayer(deck, cardsById, settings = DEFAULT_SETTINGS) {
@@ -221,7 +226,7 @@ export function moveCard(p, instId, to, asKid = false) {
   const f = findInst(n, instId)
   if (!f) return p
   const valid = to.startsWith('bf:') || to === 'stack' || ['deckTop', 'deckBottom', 'runeDeckTop', 'runeDeckBottom'].includes(to)
-    || (n.zones[to] && !['bfUnits', 'bfPool', 'stack'].includes(to))
+    || (n.zones[to] && !['bfUnits', 'bfPool', 'stack', 'bfExtra'].includes(to))
   if (!valid) return p
   const kidIds = asKid ? [] : Object.values(n.zones).flat().filter((i) => i.att === instId).map((i) => i.id)
   const inst = take(n, instId)
@@ -242,7 +247,7 @@ export function moveCard(p, instId, to, asKid = false) {
   delete inst.at
   delete inst.sts
   if (!asKid) { delete inst.att; delete inst.peek }
-  if (to.startsWith('bf:')) { inst.at = Number(to.slice(3)); n.zones.bfUnits.push(inst) }
+  if (to.startsWith('bf:')) { const key = to.slice(3); inst.at = /^\d+$/.test(key) ? Number(key) : key; n.zones.bfUnits.push(inst) }
   else if (to === 'stack') { inst.sts = Date.now(); n.zones.stack.push(inst) }
   else if (to === 'deckTop') n.zones.deck.unshift(inst)
   else if (to === 'deckBottom') n.zones.deck.push(inst)
@@ -302,12 +307,14 @@ export function targetsFor(card, zone, bfSeats = [], inst = null, hostIds = []) 
   const k = kindOf(card)
   let list
   if (k === 'rune') list = zone === 'runes' ? ['runeDeck'] : []
+  else if (zone === 'bfExtra') list = ['trash', ...(inst?.ovr ? bfSeats.map((s) => `bfov:${s}`) : [])]
+  else if (isBfToken(card)) list = ['trash', ...(card.bf_mode === 'overlay' ? bfSeats.map((s) => `bfov:${s}`) : [])]
   else if (k === 'legend' || k === 'battlefield') list = []
   else {
     list = ['base', ...bfSeats.map((s) => `bf:${s}`), 'stack', 'hand', 'champion', 'trash', 'banish', 'deck']
     if (inst) list.push(...hostIds.filter((id) => id !== inst.id && id !== inst.att).map((id) => `card:${id}`))
   }
-  const here = zone === 'bfUnits' && inst ? `bf:${inst.at}` : zone
+  const here = zone === 'bfUnits' && inst ? `bf:${inst.at}` : zone === 'bfExtra' && inst?.ovr ? `bfov:${inst.ovr}` : zone
   return list.filter((t) => t !== here)
 }
 
@@ -459,7 +466,7 @@ export function playToStack(p, instId, targetId, cards, auto = {}) {
     let n = entering ? moveCard(p, instId, 'base') : p
     const g = findInst(n, instId)
     if (g && g.inst.faceDown) n = toggleFlag(n, instId, 'faceDown')
-    if (entering && auto.exhaust && ['unit', 'champion'].includes(k)) n = exhaust(n, instId)
+    if (entering && auto.exhaust && entersTapped(cards[f.inst.cardId])) n = exhaust(n, instId)
     return addFx(n, instId, targetId)
   }
   const n = moveCard(p, instId, 'stack')
@@ -660,19 +667,63 @@ export function exhaust(p, instId) {
   const f = findInst(p, instId)
   return f && !f.inst.tapped ? toggleFlag(p, instId, 'tapped') : p
 }
-// Einheiten und Champions treten getappt ins Spiel und tappen, wenn sie vom Base auf ein Battlefield ziehen
+// Ob eine Karte getappt ins Spiel kommt: im Karten-Verwalter einstellbar (enters_ready), sonst Einheiten, Champions, Gear und Tokens getappt, Spells ready.
+export function entersTapped(card) {
+  const k = kindOf(card)
+  if (!card || ['spell', 'battlefield', 'legend', 'rune', 'other'].includes(k)) return false
+  if (card.enters_ready === true) return false
+  if (card.enters_ready === false) return true
+  if (k === 'token' && ['battlefield', 'spell'].includes(String(card.token_type || '').toLowerCase())) return false
+  return true
+}
+const unitLike = (card) => ['unit', 'champion'].includes(kindOf(card)) || (kindOf(card) === 'token' && ['', 'unit'].includes(String(card.token_type || '').toLowerCase()))
+// Karten treten getappt ins Spiel (je nach Einstellung der Karte); Einheiten tappen außerdem beim Zug vom Base auf ein Battlefield
 export function moveAuto(p, instId, to, cards, auto = {}) {
   const f = findInst(p, instId)
   if (!f) return p
   const n = moveCard(p, instId, to)
-  if (!auto.exhaust || !['unit', 'champion'].includes(kindOf(cards[f.inst.cardId]))) return n
-  const enters = (f.zone === 'hand' || f.zone === 'champion') && isBoardTarget(to)
-  const moves = f.zone === 'base' && to.startsWith('bf:')
+  if (!auto.exhaust) return n
+  const card = cards[f.inst.cardId]
+  const enters = (f.zone === 'hand' || f.zone === 'champion') && isBoardTarget(to) && entersTapped(card)
+  const moves = f.zone === 'base' && to.startsWith('bf:') && unitLike(card)
   return enters || moves ? exhaust(n, instId) : n
 }
-// Token ins Spiel bringen: `count` neue Karten im Base, mit allen Eigenschaften normaler Karten
-export function spawnTokens(p, cardId, count = 1) {
+export const isBfToken = (card) => kindOf(card) === 'token' && String(card?.token_type || '').toLowerCase() === 'battlefield'
+// Token ins Spiel bringen: `count` neue Karten im Base (getappt, falls die Karte so eingestellt ist), mit allen Eigenschaften normaler Karten.
+// Battlefield-Token mit Modus "extra" bilden ein zusätzliches Battlefield, solche mit "overlay" liegen erst im Base und werden auf ein Battlefield gezogen.
+export function spawnTokens(p, card, count = 1, auto = {}) {
   const n = clone(p)
-  for (let i = 0; i < count; i++) n.zones.base.push({ id: uid(), cardId, tapped: false, faceDown: false, token: true })
+  const tapped = auto.exhaust !== false && entersTapped(card)
+  for (let i = 0; i < count; i++) {
+    const inst = { id: uid(), cardId: card.id, tapped, faceDown: false, token: true }
+    if (isBfToken(card) && card.bf_mode !== 'overlay') { inst.tapped = false; n.zones.bfExtra.push(inst) } else n.zones.base.push(inst)
+  }
+  return n
+}
+// Overlay-Battlefield leicht versetzt über ein Battlefield legen (key = Sitz oder Zusatz-Battlefield "x<id>")
+export function overlayBattlefield(p, instId, key) {
+  const n = clone(p)
+  const inst = take(n, instId)
+  if (!inst) return p
+  inst.ovr = String(key)
+  inst.tapped = false
+  delete inst.at
+  n.zones.bfExtra.push(inst)
+  return n
+}
+export function setPoints(p, v) {
+  const n = clone(p)
+  n.points = Math.max(0, Math.min(99, Math.round(v)))
+  return n
+}
+// Unterste Karte des Decks auf die Hand bzw. des Runendecks in die Runenzone
+export function drawBottom(p) {
+  const n = clone(p)
+  if (n.zones.deck.length) n.zones.hand.push(n.zones.deck.pop())
+  return n
+}
+export function drawRuneBottom(p) {
+  const n = clone(p)
+  if (n.zones.runeDeck.length) n.zones.runes.push(n.zones.runeDeck.pop())
   return n
 }

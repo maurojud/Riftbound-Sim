@@ -572,3 +572,36 @@ fieldset { border-color: #2c3a4d; border-radius: 16px; }
 .tvwrap .stackcol, .tvwrap .stackcol .card.xs { width: auto; }
 .tvwrap .stackcol { width: calc(var(--cw) + 30px); }
 .tvwrap .stackcol .card.xs { --w: var(--cw); width: var(--cw); }
+
+/* ───────── v14: größerer Stack, Token-Ansicht in Spielgröße, Punktereihe, Overlay-Battlefields, größere Hand ───────── */
+.stackcol { width: calc(var(--cw) * 1.8 + 30px); }
+.stackcol .card, .stackcol .card.xs { --w: calc(var(--cw) * 1.8); }
+.tvwrap .stackcol { width: calc(var(--cw) * 1.7 + 30px); }
+.tvwrap .stackcol .card.xs { --w: calc(var(--cw) * 1.7); width: calc(var(--cw) * 1.7); }
+.stackcol .stack-list { gap: 12px; }
+@media (max-width: 700px) { .stackcol { width: calc(var(--cw) * 1.6 + 16px); } .stackcol .card.xs { --w: calc(var(--cw) * 1.6); } }
+
+.tokengrid { display: flex; flex-wrap: wrap; gap: 14px; }
+.tokentile { width: 104px; }
+.tokenimg { width: 96px; }
+.tokenimg .card, .tokenimg img { --w: 96px; width: 96px; }
+.tokentile .tokenimg:has(.bf), .tokenimg .card.land { width: 132px; --w: 132px; }
+.grouptitle { margin: 14px 0 6px; }
+
+.pointsbar { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 999px; background: #ffffff0d; border: 1px solid var(--line); flex-wrap: wrap; justify-content: center; }
+.pb-name { display: inline-flex; gap: 6px; align-items: center; font-weight: 700; font-size: .9rem; }
+.pb-track { display: inline-flex; gap: 4px; }
+.pb-n { min-width: 34px; min-height: 34px; padding: 0 6px; border-radius: 999px; display: inline-grid; place-items: center; font-weight: 700; font-size: .9rem; background: #ffffff10; border: 1px solid var(--line); color: inherit; }
+span.pb-n { min-width: 28px; min-height: 28px; }
+.pb-n.lit { background: color-mix(in srgb, var(--sc, var(--gold)) 35%, transparent); }
+.pb-n.on { background: var(--sc, var(--gold)); color: #10151c; border-color: transparent; }
+.pb-step { min-width: 34px; min-height: 34px; padding: 0; border-radius: 50%; font-size: 1.1rem; }
+.pb-val { margin-left: 4px; color: var(--gold); white-space: nowrap; }
+.ptsrow { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.ptsrow .pointsbar { padding: 2px 10px; }
+.tvtable .pb-n, .tvtable span.pb-n { min-width: 24px; min-height: 24px; font-size: .78rem; }
+.tvtable .pb-step { min-width: 28px; min-height: 28px; }
+
+.bfcard { position: relative; }
+.bfover { position: absolute; inset: 0; z-index: 3; transform: translate(calc(14px + var(--n, 0) * 12px), calc(10px + var(--n, 0) * 8px)); filter: drop-shadow(0 4px 8px #000a); }
+.tvwrap, .tvtable { --cw: clamp(44px, min(calc((100vh - 84px) / 14.4), 5.2vw), 120px); }

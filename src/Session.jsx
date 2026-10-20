@@ -8,7 +8,7 @@ import {
   pickBattlefield, pickChampion, targetsFor, canTap, canHide, canReveal, canMark, canAim, canGive, changeCounter, toggleStatus, clearMarks,
   analyzeDeck, fixState, findInst, kindOf, toggleTarget, removeTarget, clearTargets, giveCard, acceptGift, dropGift, takeBackGifts,
   setApproval, resolveEntry, showCards, playToStack, addFx, attachCard, detachCard, changePeek,
-  costOf, planPayment, applyPayment, moveAuto, spawnTokens,
+  costOf, planPayment, applyPayment, moveAuto, spawnTokens, overlayBattlefield, setPoints, drawBottom, drawRuneBottom,
 } from './game'
 
 export const SETTING_LABELS = {
@@ -307,29 +307,37 @@ function PayModal({ ask, cards, mine, onCancel, onFree, onPay }) {
 }
 
 // Dauerhafte Token-Auswahl: jede Token-Karte der Datenbank, beliebig oft spielbar
+const TOKEN_ORDER = ['Unit', 'Gear', 'Spell', 'Battlefield', 'Other']
 function TokenModal({ tokens, onSpawn, onClose }) {
   const [n, setN] = useState({})
   const cnt = (id) => n[id] || 1
+  const typeOf = (c) => TOKEN_ORDER.find((t) => t.toLowerCase() === String(c.token_type || '').toLowerCase()) || 'Ohne Typ'
+  const groups = [...TOKEN_ORDER, 'Ohne Typ'].map((t) => [t, tokens.filter((c) => typeOf(c) === t)]).filter(([, l]) => l.length)
   return (
     <Modal title="Tokens spielen" onClose={onClose}>
       {tokens.length === 0 && <p className="muted">Noch keine Token-Karten vorhanden. Im Karten-Verwalter die Art „Token“ setzen.</p>}
-      <div className="zone-grid tokengrid">
-        {tokens.map((c) => (
-          <div key={c.id} className="tokentile">
-            <button className="tokenimg" title="Klick spielt 1 Token" onClick={() => onSpawn(c, 1)}>
-              <CardImg src={c.image_url} alt={c.name} />
-            </button>
-            <b title={c.name}>{c.name}</b>
-            <div className="row tokenctl">
-              <button aria-label="weniger" onClick={() => setN((cur) => ({ ...cur, [c.id]: Math.max(1, (cur[c.id] || 1) - 1) }))}>−</button>
-              <span>{cnt(c.id)}</span>
-              <button aria-label="mehr" onClick={() => setN((cur) => ({ ...cur, [c.id]: Math.min(20, (cur[c.id] || 1) + 1) }))}>+</button>
-              <button className="primary" onClick={() => onSpawn(c, cnt(c.id))}>{cnt(c.id)}× spielen</button>
-            </div>
+      {groups.map(([type, list]) => (
+        <section key={type}>
+          <h4 className="grouptitle">{type === 'Unit' ? 'Units' : type === 'Gear' ? 'Gear' : type === 'Spell' ? 'Spells' : type === 'Battlefield' ? 'Battlefields' : type}</h4>
+          <div className="tokengrid">
+            {list.map((c) => (
+              <div key={c.id} className="tokentile">
+                <button className="tokenimg" title="Klick spielt 1 Token" onClick={() => onSpawn(c, 1)}>
+                  <CardImg src={c.image_url} alt={c.name} battlefield={type === 'Battlefield'} />
+                </button>
+                <b title={c.name}>{c.name}</b>
+                <div className="row tokenctl">
+                  <button aria-label="weniger" onClick={() => setN((cur) => ({ ...cur, [c.id]: Math.max(1, (cur[c.id] || 1) - 1) }))}>−</button>
+                  <span>{cnt(c.id)}</span>
+                  <button aria-label="mehr" onClick={() => setN((cur) => ({ ...cur, [c.id]: Math.min(20, (cur[c.id] || 1) + 1) }))}>+</button>
+                  <button className="primary" onClick={() => onSpawn(c, cnt(c.id))}>{cnt(c.id)}× spielen</button>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      <p className="muted small">Tokens landen im Base und verhalten sich wie normale Karten. Verlassen sie das Spielfeld, verschwinden sie.</p>
+        </section>
+      ))}
+      <p className="muted small">Tokens landen im Base und verhalten sich wie normale Karten. Verlassen sie das Spielfeld, verschwinden sie. Battlefield-Token mit dem Modus „überlegen“ ziehst du auf das gewünschte Battlefield.</p>
     </Modal>
   )
 }
@@ -485,7 +493,10 @@ export default function Session({ id, view, user }) {
     })
   const nameOf = (seat) => players.find((p) => p.seat === seat)?.name || '?'
   const stateOf = (seat) => players.find((p) => p.seat === seat)?.state
-  const bfSeats = players.filter((p) => p.state?.zones.battlefield.length).map((p) => p.seat)
+  const bfSeats = [
+    ...players.filter((p) => p.state?.zones.battlefield.length).map((p) => p.seat),
+    ...players.flatMap((p) => (p.state?.zones.bfExtra || []).filter((i) => !i.ovr).map((i) => 'x' + i.id)),
+  ]
 
   // ───────── Übergaben: Karten, die Mitspieler mir gegeben haben, übernehmen; eigene erledigte Übergaben aufräumen ─────────
   const giftKey = players.map((p) => p.seat + ':' + (p.state?.outbox || []).map((g) => `${g.inst.id}>${g.to}`).join(',')).join(';')
@@ -506,6 +517,20 @@ export default function Session({ id, view, user }) {
     }
     if (changed) commit(next)
   }, [giftKey]) // eslint-disable-line
+
+  // ───────── Aufräumen: Einheiten auf einem verschwundenen Zusatz-Battlefield kehren ins Base zurück, Overlays ohne Battlefield verschwinden ─────────
+  const bfKeyNow = bfSeats.map(String)
+  const orphans = mine ? [
+    ...mine.zones.bfUnits.filter((i) => typeof i.at === 'string' && !bfKeyNow.includes(i.at)).map((i) => ['u', i.id]),
+    ...(mine.zones.bfExtra || []).filter((i) => i.ovr && !bfKeyNow.includes(i.ovr)).map((i) => ['o', i.id]),
+  ] : []
+  const orphanKey = players.every((p) => p.state) ? orphans.map((o) => o.join(':')).join(',') : ''
+  useEffect(() => {
+    if (!orphanKey || !mineRef.current) return
+    let next = mineRef.current
+    for (const [kind, id] of orphans) next = moveCard(next, id, kind === 'u' ? 'base' : 'trash')
+    commit(next)
+  }, [orphanKey]) // eslint-disable-line
 
   // ───────── Kurz gezeigte Karten (z. B. beim Ansehen der obersten Deckkarten) ─────────
   useEffect(() => {
@@ -562,6 +587,7 @@ export default function Session({ id, view, user }) {
     const over = zoneAt(x, y, d?.allowed)
     if (!d || !over || !d.allowed.includes(over)) return
     if (over.startsWith('card:')) { act((p) => attachCard(p, d.id, over.slice(5))); return }
+    if (over.startsWith('bfov:')) { act((p) => overlayBattlefield(p, d.id, over.slice(5))); return }
     if (over === 'deck' || over === 'runeDeck') {
       // oben oder unten wird erst nach dem Loslassen gefragt
       const rune = over === 'runeDeck'
@@ -626,6 +652,7 @@ export default function Session({ id, view, user }) {
       items.push({ key: 'aim', label: '➚ Pfeil ohne Stack', run: () => { setPreview(null); setHover(null); setAim({ id: iid, mode: 'arrow' }) } })
       if (inst.targets?.length) items.push({ key: 'unaim', label: 'Pfeile entfernen', run: () => act((p) => clearTargets(p, iid)) })
     }
+    if (zone === 'bfExtra') items.push({ key: 'remove', label: 'Battlefield-Token entfernen', run: () => act((p) => moveCard(p, iid, 'trash')) })
     if (canGive(card, zone)) {
       for (const pl of players) {
         if (pl.seat !== mySeat) items.push({ key: 'give', label: `An ${pl.name} geben`, run: () => { setPreview(null); setHover(null); act((p) => giveCard(p, iid, pl.seat)) } })
@@ -758,6 +785,7 @@ export default function Session({ id, view, user }) {
       return [
         { label: 'Mischen', run: () => act((p) => shuffleZone(p, 'deck')) },
         { label: 'Oberste Karten ansehen…', run: () => setModal({ type: 'look', zone: 'deck' }) },
+        { label: 'Unterste Karte ziehen', run: () => act((p) => drawBottom(p)) },
         { label: '4 Karten ziehen', run: () => act((p) => draw(p, 4)) },
       ]
     }
@@ -765,6 +793,7 @@ export default function Session({ id, view, user }) {
       return [
         { label: 'Mischen', run: () => act((p) => shuffleZone(p, 'runeDeck')) },
         { label: 'Oberste Karten ansehen…', run: () => setModal({ type: 'look', zone: 'runeDeck' }) },
+        { label: 'Unterste Rune ziehen', run: () => act((p) => drawRuneBottom(p)) },
       ]
     }
     return null
@@ -813,6 +842,8 @@ export default function Session({ id, view, user }) {
     onApprove: (sig, on) => act((p) => setApproval(p, sig, on)),
     onResolve: (entry) => act((p) => resolveEntry(p, entry)),
     onRemoveFx: (fxId) => act((p) => resolveEntry(p, { fx: { id: fxId } })),
+    onPoints: (d) => act((p) => addPoints(p, d)),
+    onSetPoints: (n) => act((p) => setPoints(p, n)),
     onTokens: mySeat && mine && !mine.setup?.battlefield && !mine.setup?.champion ? () => setModal({ type: 'tokens' }) : null,
     previewCard: (cardId) => { setHover(null); setPreview({ seat: null, zone: 'stack', id: 'x', cardId }) },
   }
@@ -890,7 +921,7 @@ export default function Session({ id, view, user }) {
       )}
       {modal?.type === 'tokens' && (
         <TokenModal tokens={Object.values(cards).filter((c) => kindOf(c) === 'token').sort((a, b) => (a.code || a.name).localeCompare(b.code || b.name))}
-          onSpawn={(c, n) => { act((p) => spawnTokens(p, c.id, n)); say(`${n}× ${c.name} gespielt.`) }} onClose={() => setModal(null)} />
+          onSpawn={(c, n) => { act((p) => spawnTokens(p, c, n, auto)); say(String(c.token_type).toLowerCase() === 'battlefield' && c.bf_mode === 'overlay' ? `${c.name} liegt im Base: auf das Battlefield ziehen, über das es gelegt werden soll.` : `${n}× ${c.name} gespielt.`) }} onClose={() => setModal(null)} />
       )}
       {payAsk && (
         <PayModal ask={payAsk} cards={cards} mine={mine}
@@ -974,7 +1005,7 @@ export default function Session({ id, view, user }) {
     )
   }
 
-  const fanCw = vw < 700 ? 84 : window.innerHeight < 900 ? 94 : 112
+  const fanCw = vw < 700 ? 130 : Math.round(Math.min(210, Math.max(150, window.innerHeight * 0.26)))
   const playing = mine && !mine.setup?.battlefield && !mine.setup?.champion
   const openMore = (e) => {
     const r = e.currentTarget.getBoundingClientRect()

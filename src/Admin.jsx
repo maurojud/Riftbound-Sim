@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { supabase, fetchAllCards } from './supabase'
-import { KINDS, COLORS, parseCardFilename, allowsSecondColor, colorsOf as colorsOfCard } from './game'
+import { KINDS, COLORS, parseCardFilename, allowsSecondColor, colorsOf as colorsOfCard, entersTapped } from './game'
+const TOKEN_TYPES = ['Unit', 'Gear', 'Spell', 'Battlefield', 'Other']
 import { parseSetNumber, extractCode, fetchCardInfo, mapApiCard } from './cardlookup'
 import CardImg from './CardImg'
 import Pager, { usePaging, pageSlice } from './Pager'
 
-const dbHint = (m) => (/energy|might|power/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-5.sql im SQL Editor ausführen.'
+const dbHint = (m) => (/token_type|bf_mode|enters_ready/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-6.sql im SQL Editor ausführen.'
+  : /energy|might|power/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-5.sql im SQL Editor ausführen.'
   : /color2|signature|\bcode\b/i.test(m || '') ? 'Datenbank-Update fehlt: bitte supabase/migration-4.sql im SQL Editor ausführen.' : m)
 const BAD_NAME = /\d|[*#_]|\b[A-Za-z]{2,4}-\d/ // Namen mit Ziffern, Sternchen oder einem Code darin sind verdächtig
 const numOrNull = (v) => (v === '' || v === null || v === undefined || Number.isNaN(Number(v)) ? null : Number(v))
@@ -393,6 +395,30 @@ export default function Admin({ user }) {
                   <input defaultValue={c.power_colors || ''} key={c.id + 'pc' + (c.power_colors || '')}
                     onBlur={(e) => e.target.value !== (c.power_colors || '') && patch(c.id, { power_colors: e.target.value.trim() || null })} />
                 </label>
+                {c.kind === 'Token' && (
+                  <label className="small muted">Token-Typ
+                    <select value={c.token_type || ''} onChange={(e) => patch(c.id, { token_type: e.target.value || null })}>
+                      <option value="">nicht festgelegt</option>
+                      {TOKEN_TYPES.map((t) => <option key={t}>{t}</option>)}
+                    </select>
+                  </label>
+                )}
+                {(c.kind === 'Battlefield' || (c.kind === 'Token' && c.token_type === 'Battlefield')) && (
+                  <label className="small muted">Battlefield-Modus
+                    <select value={c.bf_mode || ''} onChange={(e) => patch(c.id, { bf_mode: e.target.value || null })}>
+                      <option value="">Standard (erstellt ein 3. Battlefield)</option>
+                      <option value="extra">Erstellt ein 3. Battlefield</option>
+                      <option value="overlay">Wird über ein Battlefield gelegt</option>
+                    </select>
+                  </label>
+                )}
+                {!['Spell', 'Battlefield', 'Legend', 'Rune'].includes(c.kind) && (
+                  <label className="check small" title="Haken = kommt bereit ins Spiel, kein Haken = kommt getappt">
+                    <input type="checkbox" checked={c.enters_ready == null ? !entersTapped(c) : !!c.enters_ready}
+                      onChange={(e) => patch(c.id, { enters_ready: e.target.checked })} />
+                    Kommt bereit (ready) ins Spiel
+                  </label>
+                )}
                 <button className="danger" onClick={() => remove(c)}>Löschen</button>
               </div>
             )
