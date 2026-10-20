@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import { kindOf, isBfToken, COUNTERS, STATUSES, stackEntries, stackSig, approvedBy } from './game'
+import { kindOf, isBfToken, canAim, COUNTERS, STATUSES, stackEntries, stackSig, approvedBy } from './game'
 import CardImg from './CardImg'
 
 // Alles, was die Tisch-Bausteine von der Session brauchen (Karten, Regeln, Spieler, Drag-Zustand, Klick-Handler)
@@ -27,7 +27,7 @@ function Marks({ inst }) {
   return <div className="marks">{chips.map(([k, t]) => <span key={k} className={'mk ' + k}>{t}</span>)}</div>
 }
 
-export function CardView({ card, inst, reveal = true, small, xs, onClick, handlers, dim, owner, extra, aimFrom, iid, drop }) {
+export function CardView({ card, inst, reveal = true, small, xs, onClick, handlers, dim, owner, extra, aimFrom, iid, drop, onChip, chipTitle, chipAttr }) {
   const g = useContext(GameCtx)
   const hidden = !card || (inst?.faceDown && !reveal)
   const land = (kindOf(card) === 'battlefield' || isBfToken(card)) && !hidden
@@ -38,6 +38,10 @@ export function CardView({ card, inst, reveal = true, small, xs, onClick, handle
   return (
     <div className={cls} style={owner ? { '--oc': seatColor(owner) } : undefined} data-iid={iid || inst?.id} data-drop={drop} {...h} title={card?.name}>
       {hidden ? <div className="back" /> : <CardImg src={card.image_url} alt={card.name} battlefield={land} />}
+      {onChip && !hidden && !g?.aim && (
+        <button className="aimchip" title={chipTitle || 'Pfeil auf ein Ziel setzen'} {...(chipAttr || { 'data-aim': inst?.id })}
+          onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onChip() }}>➚</button>
+      )}
       {inst?.faceDown && reveal && <span className="badge">verdeckt</span>}
       {!hidden && inst && <Marks inst={inst} />}
       {extra}
@@ -106,7 +110,8 @@ export function CardList({ seat, zone, list, xs, outline }) {
   const hostable = own && (zone === 'base' || zone === 'bfUnits')
   const one = (inst, extraProps = {}) => (
     <CardView key={inst.id} card={g.cards[inst.cardId]} inst={inst} reveal={own} xs={xs} owner={outline ? seat : undefined}
-      handlers={g.bindCard(seat, zone, inst)} dim={g.drag?.id === inst.id} aimFrom={g.aim === inst.id} {...extraProps} />
+      handlers={g.bindCard(seat, zone, inst)} dim={g.drag?.id === inst.id} aimFrom={g.aim === inst.id}
+      onChip={own && canAim(zone) && g.onAim ? () => g.onAim(inst.id) : undefined} {...extraProps} />
   )
   return list.filter((i) => !i.att || !ids.has(i.att)).map((host) => {
     const kids = list.filter((i) => i.att === host.id)
@@ -163,6 +168,7 @@ export function StackCol() {
             <CardView xs card={g.cards[e.cardId]} owner={e.seat} iid={e.key}
               inst={e.inst || { id: e.key, cardId: e.cardId }}
               handlers={e.inst ? g.bindCard(e.seat, 'stack', e.inst) : { onClick: () => (g.aim ? g.pickTarget(e.key) : g.previewCard(e.cardId)) }}
+              onChip={e.inst && e.seat === g.mySeat && g.onAim ? () => g.onAim(e.inst.id) : undefined}
               dim={g.drag?.id === e.key} aimFrom={g.aim === e.key}
               extra={<>
                 {i === 0 && entries.length > 1 && <span className="topbadge">oben</span>}
@@ -215,7 +221,8 @@ export function BfZone({ owner, topSeats, extra }) {
       <div className="bfmid">
         <div className={'bfcard' + dropCls(g, droppable ? `bfov:${key}` : null)} data-drop={droppable ? `bfov:${key}` : undefined}>
           {bf
-            ? <CardView card={g.cards[bf.cardId]} inst={bf} handlers={g.bindCard(owner.seat, extra ? 'bfExtra' : 'battlefield', bf)} aimFrom={g.aim === bf.id} />
+            ? <CardView card={g.cards[bf.cardId]} inst={bf} handlers={g.bindCard(owner.seat, extra ? 'bfExtra' : 'battlefield', bf)} aimFrom={g.aim === bf.id}
+              onChip={owner.seat === g.mySeat && g.onAim ? () => g.onAim(bf.id) : undefined} />
             : <Empty>{owner.state ? 'wählt noch…' : 'noch kein Deck'}</Empty>}
           {overs.map((o, n) => (
             <div key={o.inst.id} className="bfover" style={{ '--n': n }}>

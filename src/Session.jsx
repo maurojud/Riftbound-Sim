@@ -431,6 +431,7 @@ export function HandFan({ hand, cards, cw, bind, drag, onHide, onPlay }) {
           return (
             <div key={inst.id} className="fan-card" style={{ left: step * i, transform: `translateY(${dy}px) rotate(${rot}deg)`, zIndex: i }}>
               <CardView card={cards[inst.cardId]} inst={inst} handlers={bind(inst)} dim={drag?.id === inst.id}
+                onChip={hideable ? () => onPlay(inst) : undefined} chipAttr={{ 'data-play': inst.id }} chipTitle="Spielen: Ziel wählen, die Karte kommt auf den Stack"
                 extra={hideable && (
                   <button className={'hidechip' + (inst.faceDown ? ' on' : '')} title="Verdeckt spielen"
                     aria-pressed={!!inst.faceDown} data-hide={inst.id}
@@ -438,10 +439,6 @@ export function HandFan({ hand, cards, cw, bind, drag, onHide, onPlay }) {
                     {inst.faceDown ? 'Hidden' : 'Hide'}
                   </button>
                 )} />
-              {hideable && (
-                <button className="playchip" title="Spielen: Ziel wählen, die Karte kommt auf den Stack" data-play={inst.id}
-                  onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onPlay(inst) }}>➚</button>
-              )}
             </div>
           )
         })}
@@ -926,6 +923,7 @@ export default function Session({ id, view, user }) {
   const pw = sessionStorage.getItem('pw:' + id)
   const joinUrl = `${location.origin}${location.pathname}#/join/${row.code}`
   const ctx = {
+    onAim: (iid) => { setPreview(null); setHover(null); setAim({ id: iid, mode: 'arrow' }) },
     cards, settings, mySeat, players, bindCard, bindPile, onZone, drag, aim: aim?.id || null, pickTarget,
     onApprove: (sig, on) => act((p) => setApproval(p, sig, on)),
     onResolve: (entry) => act((p) => resolveEntry(p, entry)),

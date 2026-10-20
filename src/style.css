@@ -632,3 +632,10 @@ span.pb-n { min-width: 28px; min-height: 28px; }
 .aimmeta { color: #9fb0c8; }
 .aimchips { display: flex; flex-wrap: wrap; gap: 3px; justify-content: center; } .aimchips i { font-style: normal; background: #e3b04b33; border-radius: 999px; padding: 1px 6px; }
 .aimshow { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 70; }
+
+/* v20: Pfeil-Chip immer oben links (auch in der Hand, dort steht Hide rechts daneben); groß genug für Touch */
+.aimchip { position: absolute; top: 3px; left: 3px; z-index: 4; min-height: 0; min-width: 26px; padding: 0 7px; font-size: .9rem; line-height: 1.6; border-radius: 999px; background: var(--gold); color: #1b1608; border: 1px solid var(--gold); font-weight: 800; opacity: .92; cursor: pointer; }
+.card.xs .aimchip { min-width: 20px; padding: 0 4px; font-size: .75rem; }
+.aimchip ~ .hidechip { left: 33px; }
+.fan-card .playchip { display: none; }
+@media (pointer: coarse) { .aimchip { min-width: 34px; line-height: 1.9; font-size: 1rem; } .aimchip ~ .hidechip { left: 42px; line-height: 1.9; } .card.xs .aimchip { min-width: 28px; } }
