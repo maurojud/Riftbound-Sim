@@ -3,14 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#14303a" />
+    <meta name="theme-color" content="#10151c" />
     <title>Riftbound Table</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet" />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><p id="boot" style="font-family:sans-serif;color:#cfd8e6;text-align:center;margin-top:20vh">Lade Riftbound Table…</p></div>
+    <script>
+      // Falls die App nicht startet (z. B. alte Dateien im Zwischenspeicher des Fernsehers), erscheint hier ein Hinweis statt einer leeren Seite
+      addEventListener('error', function (e) {
+        var b = document.getElementById('boot'); if (!b) return
+        var t = e.target && e.target.src ? 'Datei konnte nicht geladen werden: ' + e.target.src : (e.message || 'Unbekannter Fehler')
+        b.innerHTML = 'Die Seite konnte nicht gestartet werden.<br><small>' + String(t).replace(/</g, '&lt;') + '</small><br><br><button onclick="location.reload()">Neu laden</button>'
+      }, true)
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
