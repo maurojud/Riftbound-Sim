@@ -46,6 +46,10 @@ create table public.cards (
   token_type text,                   -- Unit | Gear | Spell | Battlefield | Other (nur bei Art Token)
   bf_mode text,                      -- extra (3. Battlefield) | overlay (über ein Battlefield gelegt)
   enters_ready boolean,              -- true = kommt bereit, false = getappt, leer = Standard
+  legend_energy integer,             -- Legend übernimmt so viel Energy
+  legend_power integer,              -- Legend übernimmt so viel Power
+  legend_kinds text,                 -- Kartenarten, für die das gilt (leer = alle)
+  legend_tap boolean,                -- false = Legend wird beim Kosten-Übernehmen nicht getappt
   created_at timestamptz not null default now()
 );
 alter table public.cards enable row level security;
