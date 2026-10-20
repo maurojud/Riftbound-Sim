@@ -47,9 +47,9 @@ const zoneAt = (x, y, allowed) => {
   return hand
 }
 
-function Modal({ title, onClose, children, top }) {
+function Modal({ title, onClose, children }) {
   return (
-    <div className={'modal-bg' + (top ? ' top' : '')} onClick={onClose}>
+    <div className="modal-bg top" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head"><h3>{title}</h3><button onClick={onClose}>Schließen</button></div>
         {children}
@@ -289,7 +289,7 @@ function PayModal({ ask, cards, mine, onCancel, onFree, onPay }) {
     <Modal title={`„${ask.name}“ bezahlen`} onClose={onCancel}>
       <p>Wähle {ask.choice.n} {ask.choice.n === 1 ? 'Rune' : 'Runen'} ({ask.cost.colors.join(' oder ')}) zum Recyceln. Sie kommen unter das Runendeck.
         {ask.cost.energy > 0 && ` Zusätzlich werden ${ask.cost.energy} Runen für die Energy getappt.`}</p>
-      <div className="zone-grid">
+      <div className="zone-grid paygrid">
         {runes.map((r) => (
           <button key={r.id} className={'paypick' + (picked.includes(r.id) ? ' on' : '')} aria-pressed={picked.includes(r.id)} onClick={() => toggle(r.id)}>
             <CardImg src={cards[r.cardId]?.image_url} alt={cards[r.cardId]?.name} />

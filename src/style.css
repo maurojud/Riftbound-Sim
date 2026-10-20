@@ -612,3 +612,7 @@ span.pb-n { min-width: 28px; min-height: 28px; }
 .modal-bg.top .modal { max-height: 64vh; }
 .legendpay { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border-radius: 10px; background: #ffffff0a; }
 .legendkinds { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+
+/* v16: alle Fenster gleich hoch und oben; Runenauswahl mit Karten in Token-Größe */
+.paygrid { display: flex; flex-wrap: wrap; gap: 14px; }
+.paygrid .paypick { width: 104px; }
