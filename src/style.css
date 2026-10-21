@@ -19,7 +19,9 @@ button {
 }
 button:hover:not(:disabled) { background: #2f4157; }
 button:disabled { opacity: .55; cursor: default; }
-button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+input:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+select:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 button.primary { background: var(--gold); color: #1b1608; border-color: var(--gold); font-weight: 600; }
 button.primary:hover:not(:disabled) { background: #f0c260; }
 button.danger { background: transparent; border-color: var(--danger); color: #ff9d92; }
@@ -100,7 +102,7 @@ h1 { font-size: 2.2rem; font-weight: 800; }
 .board.mine { --cw: 84px; }
 
 /* Modals */
-.modal-bg { position: fixed; inset: 0; background: #000b; display: grid; place-items: center; z-index: 20; padding: 12px; }
+.modal-bg { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: #000b; display: grid; place-items: center; z-index: 20; padding: 12px; }
 .modal { background: var(--felt-2); border-radius: 14px; padding: 16px; max-width: 920px; width: 100%; max-height: 92vh; overflow: auto; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
 .zone-grid { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -236,14 +238,14 @@ h1 { font-size: 2.2rem; font-weight: 800; }
 .turnbar.waiting { background: #e3b04b26; color: #ffd98a; }
 
 /* Handfächer */
-.fan-drop { position: absolute; inset: 0; pointer-events: none; }
+.fan-drop { position: absolute; top: 0; right: 0; bottom: 0; left: 0; pointer-events: none; }
 .fan.dragging .fan-drop { pointer-events: auto; }
 .fan-card:hover { z-index: 200 !important; }
 .fan-card .card { transition: transform .15s ease; }
 .fan-card:hover .card { box-shadow: 0 0 0 2px var(--gold), 0 0 22px 6px #f2c14e99; filter: brightness(1.14); }
 
 /* Kontextmenü, Vorschau, Ghost */
-.ctx-bg { position: fixed; inset: 0; z-index: 60; }
+.ctx-bg { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 60; }
 .ctxmenu { position: fixed; background: #0b1018; border: 1px solid #34445a; border-radius: 12px; padding: 5px; min-width: 190px; box-shadow: 0 10px 30px #000a; }
 .ctxmenu button { display: block; width: 100%; text-align: left; border: none; background: none; border-radius: 8px; min-height: 38px; }
 .ctxmenu button:hover:not(:disabled) { background: #2f4157; }
@@ -297,7 +299,7 @@ h1 { font-size: 2.2rem; font-weight: 800; }
 .hidechip { position: absolute; top: 3px; left: 3px; z-index: 3; font-size: .62rem; padding: 1px 7px; min-height: 0; line-height: 1.5; border-radius: 999px; background: #000b; border: 1px solid #ffffff55; }
 .hidechip.on { background: var(--gold); color: #1b1608; border-color: var(--gold); font-weight: 700; }
 
-.sd { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 2px; z-index: 3; }
+.sd { position: absolute; top: 0; right: 0; bottom: 0; left: 0; display: flex; flex-direction: column; gap: 2px; z-index: 3; }
 .sdh { flex: 1; display: grid; place-items: center; font-size: .6rem; color: var(--gold); background: #0a0f16ee; border: 1px dashed var(--gold); border-radius: 6px; }
 .sdh.dropover { background: #e3b04b66; color: #fff; border-style: solid; }
 
@@ -388,7 +390,7 @@ fieldset { border-color: #2c3a4d; border-radius: 16px; }
 .myboard .opp { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 18px; background: #ffffff08; border: 1px solid var(--line); }
 
 /* Zielpfeile und Hinweisleiste */
-.arrows { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 44; overflow: visible; }
+.arrows { position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 44; overflow: visible; }
 .arrow.mine line.hit { pointer-events: stroke; cursor: pointer; }
 .arrow.mine polygon { pointer-events: all; cursor: pointer; }
 .arrow.mine:hover line:not(.hit) { stroke-width: 6; }
@@ -585,7 +587,8 @@ fieldset { border-color: #2c3a4d; border-radius: 16px; }
 .tokentile { width: 104px; }
 .tokenimg { width: 96px; }
 .tokenimg .card, .tokenimg img { --w: 96px; width: 96px; }
-.tokentile .tokenimg:has(.bf), .tokenimg .card.land { width: 132px; --w: 132px; }
+.tokentile .tokenimg:has(.bf) { width: 132px; --w: 132px; }
+.tokenimg .card.land { width: 132px; --w: 132px; }
 .grouptitle { margin: 14px 0 6px; }
 
 .pointsbar { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 999px; background: #ffffff0d; border: 1px solid var(--line); flex-wrap: wrap; justify-content: center; }
@@ -603,7 +606,7 @@ span.pb-n { min-width: 28px; min-height: 28px; }
 .tvtable .pb-step { min-width: 28px; min-height: 28px; }
 
 .bfcard { position: relative; }
-.bfover { position: absolute; inset: 0; z-index: 3; transform: translate(calc(14px + var(--n, 0) * 12px), calc(10px + var(--n, 0) * 8px)); filter: drop-shadow(0 4px 8px #000a); }
+.bfover { position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 3; transform: translate(calc(14px + var(--n, 0) * 12px), calc(10px + var(--n, 0) * 8px)); filter: drop-shadow(0 4px 8px #000a); }
 .tvwrap, .tvtable { --cw: clamp(44px, min(calc((100vh - 84px) / 14.4), 5.2vw), 120px); }
 
 /* v15: Fenster über der Hand, Token-Fenster niedrig und oben, Legend-Rabatt im Verwalter */
@@ -625,7 +628,8 @@ span.pb-n { min-width: 28px; min-height: 28px; }
 .aimsec h4 { margin: 10px 0 6px; font-size: .85rem; }
 .aimtiles { display: flex; flex-wrap: wrap; gap: 10px; }
 .aimtile { width: 96px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px; border: 2px solid transparent; border-radius: 12px; background: #ffffff0a; font-size: .72rem; text-align: center; }
-.aimtile:hover, .aimtile:focus-visible { border-color: var(--gold); background: #e3b04b22; }
+.aimtile:hover { border-color: var(--gold); background: #e3b04b22; }
+.aimtile:focus-visible { border-color: var(--gold); background: #e3b04b22; }
 .aimtile b { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .75rem; }
 .aimimg { width: 100%; display: block; } .aimimg img { width: 100%; display: block; border-radius: 6px; } .aimimg .back { display: block; aspect-ratio: 5 / 7; background: #2a3445; border-radius: 6px; }
 .aimtile.tapped .aimimg { opacity: .75; }
@@ -640,3 +644,23 @@ span.pb-n { min-width: 28px; min-height: 28px; }
 .fan-card .playchip { display: none; }
 @media (pointer: coarse) { .aimchip { min-width: 34px; line-height: 1.9; font-size: 1rem; } .aimchip ~ .hidechip { left: 42px; line-height: 1.9; } .card.xs .aimchip { min-width: 28px; } }
 .paypick img { width: 100%; height: auto; display: block; border-radius: 7px; }
+
+/* ───────── Kompatibilität für ältere Browser (Samsung-/LG-Fernseher) ─────────
+   Alles hier greift nur, wenn der Browser die jeweilige Funktion nicht kennt. Moderne Browser ignorieren die Blöcke. */
+@supports not (aspect-ratio: 1 / 1) {
+  .card { height: calc(var(--w, var(--cw)) * 1.4); }
+  .card.land { height: calc(var(--cw) * 1.4 * .7143); }
+  .tokenimg .card.land { height: calc(132px * .7143); }
+  .pile-face { height: calc(56px * 1.4); }
+  .bfimg { height: 0; padding-top: 71.4286%; }
+  .bfimg:not(.portrait) img { position: absolute; top: 0; left: 0; }
+  .aimimg .back { height: 130px; }
+}
+@supports not (width: min(1px, 2px)) {
+  .tvwrap, .tvtable { --cw: calc((100vh - 84px) / 14.4); }
+  .mine-board { --cw: 80px; }
+  .mk { font-size: 10px; }
+  .pvimg.bf { width: 90vw; }
+  .toast { max-width: 90vw; }
+  .aimpanel { width: 94vw; }
+}
